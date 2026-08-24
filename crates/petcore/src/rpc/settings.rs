@@ -1,15 +1,5 @@
 use super::*;
 
-pub(super) fn owns(method: &str) -> bool {
-    method.starts_with("behavior.")
-        || method.starts_with("onboarding.")
-        || method.starts_with("overlay.")
-        || method.starts_with("settings.")
-        || method.starts_with("renderer.")
-        || method.starts_with("codex.app_server.")
-        || method.starts_with("diagnostics.")
-}
-
 pub(super) fn handle(state: &CoreState, request: RpcRequest) -> Result<Value> {
     match request.method.as_str() {
         "behavior.get" => Ok(json!(state.database.behavior_with_revision()?)),
@@ -91,7 +81,7 @@ pub(super) fn handle(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 .params
                 .get("value")
                 .cloned()
-                .ok_or_else(|| PetCoreError::InvalidRequest("missing value".to_string()))?;
+                .ok_or_else(|| PetCoreError::InvalidParams("missing value".to_string()))?;
             state.database.set_setting(&key, &value)?;
             Ok(json!({ "ok": true }))
         }

@@ -2,6 +2,7 @@ mod agents;
 #[path = "connections.rs"]
 mod connections_rpc;
 mod generation;
+mod methods;
 mod pets;
 mod settings;
 
@@ -1499,135 +1500,11 @@ fn handle_rpc_value(state: &CoreState, value: Value) -> Option<Value> {
 }
 
 fn known_rpc_method(method: &str) -> bool {
-    matches!(
-        method,
-        "petcore.health"
-            | "petcore.shutdown"
-            | "state.snapshot"
-            | "state.wait"
-            | "behavior.get"
-            | "behavior.patch"
-            | "onboarding.get"
-            | "onboarding.update"
-            | "overlay.placement.get"
-            | "overlay.placement.update"
-            | "overlay.placement.reposition"
-            | "overlay.placement.reset"
-            | "settings.get"
-            | "settings.update"
-            | "agent.ingest"
-            | "agent.parse_warnings"
-            | "agent.session.acknowledge"
-            | "events.recent"
-            | "pet.list"
-            | "pet.history"
-            | "pet.activate"
-            | "pet.delete"
-            | "pet.assets.repair"
-            | "petpack.validate"
-            | "petpack.import"
-            | "petpack.seed_bundled"
-            | "petpack.export"
-            | "generation.start"
-            | "generation.retry"
-            | "generation.resume"
-            | "generation.messages"
-            | "generation.messages.list"
-            | "generation.for_pet"
-            | "generation.latest"
-            | "generation.history.list"
-            | "generation.history.detail"
-            | "generation.history.delete"
-            | "generation.edit"
-            | "generation.messages.wait"
-            | "generation.reply"
-            | "generation.cancel"
-            | "connections.check"
-            | "connections.receipts"
-            | "connections.repair"
-            | "connections.refresh_installed"
-            | "connections.uninstall"
-            | "connections.test"
-            | "portable_skill.status"
-            | "portable_skill.install"
-            | "portable_skill.uninstall"
-            | "product.convergence.get"
-            | "product.convergence.update"
-            | "product.convergence.preflight"
-            | "renderer.budget"
-            | "codex.app_server.probe"
-            | "diagnostics.export"
-    )
+    methods::known_rpc_method(method)
 }
 
 fn validate_method_params(method: &str, params: &Value) -> Result<()> {
-    let allowed: &[&str] = match method {
-        "petcore.health"
-        | "state.snapshot"
-        | "behavior.get"
-        | "onboarding.get"
-        | "overlay.placement.get"
-        | "pet.list"
-        | "generation.latest"
-        | "codex.app_server.probe"
-        | "connections.receipts"
-        | "connections.refresh_installed"
-        | "portable_skill.status"
-        | "portable_skill.install"
-        | "portable_skill.uninstall"
-        | "product.convergence.get"
-        | "product.convergence.preflight" => &[],
-        "petcore.shutdown" => &["expected_instance_id"],
-        "state.wait" => &["after_revision", "timeout_ms"],
-        "behavior.patch" => &["expected_revision", "changes"],
-        "onboarding.update" => &["expected_revision", "progress"],
-        "overlay.placement.update" => &[
-            "x",
-            "y",
-            "display_width_pt",
-            "display_id",
-            "expected_revision",
-        ],
-        "overlay.placement.reposition" => &["x", "y", "display_width_pt", "display_id"],
-        "overlay.placement.reset" => &[],
-        "settings.get" => &["key"],
-        "settings.update" => &["key", "value"],
-        "agent.ingest" => AGENT_EVENT_ALLOWED_FIELDS,
-        "agent.parse_warnings" => &["source", "warnings"],
-        "agent.session.acknowledge" => &["acknowledgement_id"],
-        "events.recent" => &["limit"],
-        "pet.activate" | "pet.delete" | "pet.assets.repair" => &["id"],
-        "pet.history" => &["pet_id", "limit"],
-        "petpack.validate" => &["path"],
-        "petpack.import" => &["path", "expect_absent"],
-        "petpack.seed_bundled" => &["inventory", "inventory_root"],
-        "petpack.export" => &["id", "path"],
-        "generation.start" => &["description", "style", "quality", "reference_images"],
-        "generation.retry" => &["job_id", "form"],
-        "generation.resume" => &["job_id", "instruction", "request_id"],
-        "generation.messages"
-        | "generation.cancel"
-        | "generation.history.detail"
-        | "generation.history.delete" => &["job_id"],
-        "generation.messages.list" => &["job_id", "before_sequence", "limit"],
-        "generation.for_pet" => &["pet_id"],
-        "generation.history.list" => &["limit"],
-        "generation.edit" => &["pet_id", "instruction", "baseline_revision_id"],
-        "generation.messages.wait" => &["job_id", "after_revision", "timeout_ms"],
-        "generation.reply" => &["job_id", "content", "request_id"],
-        "connections.check" => &["source", "cwd"],
-        "connections.repair" => &["source", "cwd"],
-        "connections.uninstall" | "connections.test" => &["source"],
-        "product.convergence.update" => &[
-            "schema_version",
-            "build_id",
-            "app_version",
-            "connector_report",
-        ],
-        "renderer.budget" => &["quality", "frame_count"],
-        "diagnostics.export" => &["app_environment"],
-        _ => return Ok(()),
-    };
+    let allowed = methods::allowed_params(method);
 
     let object = match params {
         Value::Null => return Ok(()),
@@ -1649,11 +1526,20 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
 fn rpc_error_for_core(error: PetCoreError) -> (i64, String) {
     match error {
         PetCoreError::Json(error) => (-32602, error.to_string()),
+        PetCoreError::InvalidParams(message) => (-32602, message),
+        // Legacy string-encoded parameter errors keep their historical
+        // -32602 mapping; producers migrated to `InvalidParams` no longer
+        // depend on these prefixes.
         PetCoreError::InvalidRequest(message) if invalid_params_message(&message) => {
             (-32602, message)
         }
         PetCoreError::InvalidRequest(message) | PetCoreError::Validation(message) => {
             (-32000, message)
+        }
+        PetCoreError::GenerationConflict { active_job } => {
+            // The wire message and `error.data` extraction in
+            // `rpc_error_value` both consume this exact rendering.
+            (-32009, format!("generation_active_conflict: {active_job}"))
         }
         PetCoreError::Conflict(message) => (-32009, message),
         PetCoreError::Io(_)
@@ -2012,24 +1898,22 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
 
 fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value> {
     if request.jsonrpc.as_deref() != Some("2.0") {
-        return Err(PetCoreError::InvalidRequest(
+        return Err(PetCoreError::InvalidParams(
             "jsonrpc must be 2.0".to_string(),
         ));
     }
     validate_method_params(&request.method, &request.params)?;
 
-    let handler: fn(&CoreState, RpcRequest) -> Result<Value> = if pets::owns(&request.method) {
-        pets::handle
-    } else if generation::owns(&request.method) {
-        generation::handle
-    } else if connections_rpc::owns(&request.method) {
-        connections_rpc::handle
-    } else if agents::owns(&request.method) {
-        agents::handle
-    } else if settings::owns(&request.method) {
-        settings::handle
-    } else {
+    let Some(spec) = methods::method_spec(&request.method) else {
         return handle_core_request(state, request);
+    };
+    let handler: fn(&CoreState, RpcRequest) -> Result<Value> = match spec.owner {
+        methods::RpcMethodOwner::Pets => pets::handle,
+        methods::RpcMethodOwner::Generation => generation::handle,
+        methods::RpcMethodOwner::Connections => connections_rpc::handle,
+        methods::RpcMethodOwner::Agents => agents::handle,
+        methods::RpcMethodOwner::Settings => settings::handle,
+        methods::RpcMethodOwner::Core => return handle_core_request(state, request),
     };
     handler(state, request)
 }
@@ -2745,7 +2629,7 @@ pub fn normalize_event(params: &Value) -> Result<AgentEvent> {
 
 fn validate_agent_event_shape(params: &Value) -> Result<()> {
     let object = params.as_object().ok_or_else(|| {
-        PetCoreError::InvalidRequest("agent event params must be an object".to_string())
+        PetCoreError::InvalidParams("agent event params must be an object".to_string())
     })?;
     for key in object.keys() {
         if !AGENT_EVENT_ALLOWED_FIELDS.contains(&key.as_str()) {
@@ -2859,7 +2743,7 @@ fn bounded_u64_param(
 }
 
 fn invalid_params(message: impl Into<String>) -> PetCoreError {
-    PetCoreError::InvalidRequest(format!("invalid params: {}", message.into()))
+    PetCoreError::InvalidParams(format!("invalid params: {}", message.into()))
 }
 
 fn required_canonical_decimal_u64(params: &Value, key: &str) -> Result<u64> {
@@ -3035,6 +2919,43 @@ fn read_http_port(paths: &AppPaths) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_invalid_params_matches_the_legacy_string_sniff() {
+        let legacy_messages = [
+            "invalid params: state.wait params must be an object",
+            "missing value",
+            "jsonrpc must be 2.0",
+            "agent event params must be an object",
+            "invalid params: agent event payload must be a JSON object",
+        ];
+        for message in legacy_messages {
+            let typed = rpc_error_for_core(PetCoreError::InvalidParams(message.to_string()));
+            assert_eq!(typed, (-32602, message.to_string()));
+            // The legacy string-encoded form must keep rendering the exact
+            // same wire pair for any producer that has not migrated yet.
+            let sniffed = rpc_error_for_core(PetCoreError::InvalidRequest(message.to_string()));
+            assert_eq!(sniffed, typed);
+        }
+    }
+
+    #[test]
+    fn generation_conflict_keeps_wire_message_and_structured_data() {
+        let active_job = serde_json::json!({ "job_id": "job_1", "status": "running" });
+        let error = PetCoreError::GenerationConflict {
+            active_job: active_job.clone(),
+        };
+        let (code, message) = rpc_error_for_core(error);
+        assert_eq!(code, -32009);
+        assert_eq!(
+            message,
+            format!("generation_active_conflict: {active_job}"),
+            "the wire message must stay byte-identical to the legacy string form"
+        );
+        let value = rpc_error_value(json!("req-1"), code, &message);
+        assert_eq!(value["error"]["data"]["kind"], "generation_active_conflict");
+        assert_eq!(value["error"]["data"]["active_job"], active_job);
+    }
 
     static APP_SERVER_ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -4013,7 +3934,7 @@ done
         wrong_digest.results[0].active_content_sha256 = forged;
         assert!(matches!(
             handle_request(&state, convergence_update_request(wrong_digest)),
-            Err(PetCoreError::InvalidRequest(_))
+            Err(PetCoreError::InvalidParams(_))
         ));
 
         let mut wrong_static_version = complete_convergence_report(&state.paths);
@@ -4021,7 +3942,7 @@ done
         wrong_static_version.results[1].active_version = Some("0.0.0".to_string());
         assert!(matches!(
             handle_request(&state, convergence_update_request(wrong_static_version)),
-            Err(PetCoreError::InvalidRequest(_))
+            Err(PetCoreError::InvalidParams(_))
         ));
 
         let mut static_digest = complete_convergence_report(&state.paths);
@@ -4029,7 +3950,7 @@ done
         static_digest.results[2].expected_content_sha256 = Some("d".repeat(64));
         assert!(matches!(
             handle_request(&state, convergence_update_request(static_digest)),
-            Err(PetCoreError::InvalidRequest(_))
+            Err(PetCoreError::InvalidParams(_))
         ));
 
         let mut incomplete = complete_convergence_report(&state.paths);
@@ -4039,7 +3960,7 @@ done
         incomplete.results[0].error = Some("host unavailable".to_string());
         assert!(matches!(
             handle_request(&state, convergence_update_request(incomplete)),
-            Err(PetCoreError::InvalidRequest(_))
+            Err(PetCoreError::InvalidParams(_))
         ));
         assert_eq!(state.database.product_convergence_receipt().unwrap(), None);
     }
@@ -4054,7 +3975,7 @@ done
         request.params["connector_report"]["results"][0]["unexpected"] = json!(true);
         assert!(matches!(
             handle_request(&state, request),
-            Err(PetCoreError::InvalidRequest(_))
+            Err(PetCoreError::InvalidParams(_))
         ));
     }
 

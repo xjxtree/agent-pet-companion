@@ -972,5 +972,5 @@ fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
 }
 
 fn invalid_event(message: impl Into<String>) -> PetCoreError {
-    PetCoreError::InvalidRequest(format!("invalid params: {}", message.into()))
+    PetCoreError::InvalidParams(format!("invalid params: {}", message.into()))
 }

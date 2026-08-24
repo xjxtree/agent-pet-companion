@@ -1,9 +1,5 @@
 use super::*;
 
-pub(super) fn owns(method: &str) -> bool {
-    method.starts_with("agent.") || method.starts_with("events.")
-}
-
 pub(super) fn handle(state: &CoreState, request: RpcRequest) -> Result<Value> {
     match request.method.as_str() {
         "agent.ingest" => {

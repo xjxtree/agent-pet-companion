@@ -1,11 +1,5 @@
 use super::*;
 
-pub(super) fn owns(method: &str) -> bool {
-    method.starts_with("connections.")
-        || method.starts_with("product.convergence.")
-        || method.starts_with("portable_skill.")
-}
-
 pub(super) fn handle(state: &CoreState, request: RpcRequest) -> Result<Value> {
     match request.method.as_str() {
         "connections.check" => {

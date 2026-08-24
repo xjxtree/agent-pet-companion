@@ -54,6 +54,52 @@ const PET_STUDIO_CONVERSATION_FLUSH_INTERVAL: Duration = Duration::from_millis(2
 const PET_STUDIO_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_CONSECUTIVE_STALLED_CHECKPOINT_TURNS: usize = 3;
 const MAX_EXTERNAL_CHECKPOINT_WALL_TIME: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// The recoverable external-source pause reasons this module can produce.
+///
+/// `error_message` renders the exact failure-detail strings persisted with a
+/// session, and `from_error_detail` parses them back. Both live here so the
+/// cross-module contract with `generation` cannot drift silently; historical
+/// details written by older builds keep parsing because the rendered bytes
+/// are treated as a stable format.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExternalCheckpointPauseKind {
+    /// External full source work exceeded the continuous-run wall window.
+    WallWindowExceeded,
+    /// External full source work made no durable workspace progress for the
+    /// configured number of consecutive checkpoint turns.
+    StalledCheckpointTurns { limit: usize },
+}
+
+impl ExternalCheckpointPauseKind {
+    pub fn error_message(&self) -> String {
+        match self {
+            Self::WallWindowExceeded => {
+                "external full source paused after the 12-hour continuation safety window"
+                    .to_string()
+            }
+            Self::StalledCheckpointTurns { limit } => format!(
+                "external full source paused after {limit} consecutive checkpoint turns without durable workspace progress"
+            ),
+        }
+    }
+
+    pub fn from_error_detail(detail: &str) -> Option<Self> {
+        if detail.contains("12-hour continuation safety window") {
+            return Some(Self::WallWindowExceeded);
+        }
+        let rest = detail
+            .strip_prefix("external full source paused after ")
+            .and_then(|rest| {
+                rest.strip_suffix(
+                    " consecutive checkpoint turns without durable workspace progress",
+                )
+            })?;
+        rest.parse::<usize>()
+            .ok()
+            .map(|limit| Self::StalledCheckpointTurns { limit })
+    }
+}
 const MAX_CHECKPOINT_FINGERPRINT_ENTRIES: usize = 8_192;
 const MAX_CHECKPOINT_FINGERPRINT_DEPTH: usize = 8;
 const EXTERNAL_HELPER_TURN_TIMEOUT: Duration = Duration::from_millis(600_000);
@@ -767,7 +813,7 @@ fn codex_activity_session_surface(source: &Value) -> &'static str {
 /// redaction and display-text policy as hook events.
 pub fn read_codex_thread_display(thread_id: &str) -> Result<CodexThreadDisplay> {
     if !is_codex_thread_id(thread_id) {
-        return Err(PetCoreError::InvalidRequest(
+        return Err(PetCoreError::InvalidParams(
             "invalid params: Codex thread id must be a UUID".to_string(),
         ));
     }
@@ -1354,6 +1400,48 @@ fn codex_display_revision(items: &[&Value]) -> String {
         .or_else(|| codex_display_message(item).map(|message| message.content))
         .unwrap_or_default();
     format!("{item_type}:{item_id}:{status}:{phase}:{visible_content}")
+}
+
+#[cfg(test)]
+mod external_checkpoint_pause_tests {
+    use super::*;
+
+    #[test]
+    fn pause_kind_messages_round_trip_and_keep_their_exact_bytes() {
+        let wall = ExternalCheckpointPauseKind::WallWindowExceeded;
+        assert_eq!(
+            wall.error_message(),
+            "external full source paused after the 12-hour continuation safety window"
+        );
+        assert_eq!(
+            ExternalCheckpointPauseKind::from_error_detail(&wall.error_message()),
+            Some(wall)
+        );
+
+        let stalled = ExternalCheckpointPauseKind::StalledCheckpointTurns { limit: 3 };
+        assert_eq!(
+            stalled.error_message(),
+            "external full source paused after 3 consecutive checkpoint turns without durable workspace progress"
+        );
+        assert_eq!(
+            ExternalCheckpointPauseKind::from_error_detail(&stalled.error_message()),
+            Some(stalled)
+        );
+    }
+
+    #[test]
+    fn unrelated_failure_details_do_not_parse_as_pause_kinds() {
+        assert_eq!(
+            ExternalCheckpointPauseKind::from_error_detail("turn timed out"),
+            None
+        );
+        assert_eq!(
+            ExternalCheckpointPauseKind::from_error_detail(
+                "external full source paused after many consecutive checkpoint turns without durable workspace progress"
+            ),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3393,10 +3481,7 @@ fn continue_external_source_at_checkpoints(
             >= MAX_EXTERNAL_CHECKPOINT_WALL_TIME
         {
             collected.completed = false;
-            collected.error = Some(
-                "external full source paused after the 12-hour continuation safety window"
-                    .to_string(),
-            );
+            collected.error = Some(ExternalCheckpointPauseKind::WallWindowExceeded.error_message());
             break;
         }
 
@@ -3511,9 +3596,12 @@ fn continue_external_source_at_checkpoints(
             && !is_non_checkpoint_error(collected)
         {
             collected.completed = false;
-            collected.error = Some(format!(
-                "external full source paused after {MAX_CONSECUTIVE_STALLED_CHECKPOINT_TURNS} consecutive checkpoint turns without durable workspace progress"
-            ));
+            collected.error = Some(
+                ExternalCheckpointPauseKind::StalledCheckpointTurns {
+                    limit: MAX_CONSECUTIVE_STALLED_CHECKPOINT_TURNS,
+                }
+                .error_message(),
+            );
             break;
         }
         checkpoint_index = checkpoint_index.saturating_add(1);
@@ -3973,7 +4061,8 @@ fn collect_turn_events(
                     announced_post_processing = true;
                     on_update(PetStudioSessionUpdate {
                         kind: PetStudioSessionUpdateKind::Processing,
-                        content: "图像素材已生成，正在透明化、分帧并构建宠物包。".to_string(),
+                        content: crate::generation::messages::PIPELINE_STAGE_TRANSPARENT_FRAMES
+                            .to_string(),
                         progress: 0.12,
                     });
                 }
@@ -4016,7 +4105,8 @@ fn collect_turn_events(
                         announced_post_processing = true;
                         on_update(PetStudioSessionUpdate {
                             kind: PetStudioSessionUpdateKind::Processing,
-                            content: "图像素材已生成，正在透明化、分帧并构建宠物包。".to_string(),
+                            content: crate::generation::messages::PIPELINE_STAGE_TRANSPARENT_FRAMES
+                                .to_string(),
                             progress: 0.12,
                         });
                     }
@@ -5242,7 +5332,7 @@ fn normalize_ai_brief(parsed: Value, _form: &GenerationForm) -> (Value, Vec<Stri
         .map(|value| value.chars().take(16).collect::<String>())
         .unwrap_or_else(|| {
             warnings.push("AI brief missing non-empty name; using default pet name.".to_string());
-            "自定义桌宠".to_string()
+            crate::generation::messages::DEFAULT_PET_DISPLAY_NAME.to_string()
         });
     object.insert("name".to_string(), json!(name));
 

@@ -118,10 +118,12 @@ impl Database {
             )
             .optional()?;
         if let Some((active_job_id, active_status)) = active_job {
-            return Err(PetCoreError::Conflict(format!(
-                "generation_active_conflict: {}",
-                serde_json::json!({ "job_id": active_job_id, "status": active_status })
-            )));
+            return Err(PetCoreError::GenerationConflict {
+                active_job: serde_json::json!({
+                    "job_id": active_job_id,
+                    "status": active_status
+                }),
+            });
         }
         transaction.execute(
             r#"

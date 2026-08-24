@@ -710,8 +710,10 @@ fn event_to_params(event: petcore_types::AgentEvent) -> serde_json::Value {
 
 fn http_status_for_core_error(error: &PetCoreError) -> u16 {
     match error {
-        PetCoreError::InvalidRequest(_) | PetCoreError::Json(_) => 400,
-        PetCoreError::Conflict(_) => 409,
+        PetCoreError::InvalidRequest(_)
+        | PetCoreError::InvalidParams(_)
+        | PetCoreError::Json(_) => 400,
+        PetCoreError::Conflict(_) | PetCoreError::GenerationConflict { .. } => 409,
         _ => 500,
     }
 }

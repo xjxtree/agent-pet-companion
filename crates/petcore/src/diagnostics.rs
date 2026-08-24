@@ -56,9 +56,11 @@ impl DiagnosticErrorCode {
             PetCoreError::Json(_) => Self::Json,
             PetCoreError::Image(_) => Self::Image,
             PetCoreError::Zip(_) => Self::Zip,
-            PetCoreError::InvalidRequest(_) => Self::InvalidRequest,
+            PetCoreError::InvalidRequest(_) | PetCoreError::InvalidParams(_) => {
+                Self::InvalidRequest
+            }
             PetCoreError::Validation(_) => Self::Validation,
-            PetCoreError::Conflict(_) => Self::Conflict,
+            PetCoreError::Conflict(_) | PetCoreError::GenerationConflict { .. } => Self::Conflict,
         }
     }
 }

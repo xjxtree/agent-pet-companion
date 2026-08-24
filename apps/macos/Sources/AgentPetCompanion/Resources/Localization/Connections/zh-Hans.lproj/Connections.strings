@@ -12,6 +12,13 @@
 "verification_status.unverified" = "待验证";
 "verification_status.not_required" = "无需验证";
 "connections.pane.detail" = "连接详情";
+"connections.check.done_all" = "连接检查完成";
+"connections.check.done_count_format" = "%d 个 Agent 连接检查完成";
+"connections.check.done_one_format" = "%@ 检查完成";
+"connections.repair.done_format" = "连接修复完成：%@";
+"connections.repair.pending_format" = "修复已执行，仍需处理：%@";
+"connections.uninstall.done_format" = "连接卸载完成：%@";
+"connections.uninstall.pending_format" = "卸载已执行，仍需处理：%@";
 "connections.pane.environment" = "检查环境";
 "connections.health.pending" = "待检查";
 "connections.health.attention_format" = "%d 项待处理";

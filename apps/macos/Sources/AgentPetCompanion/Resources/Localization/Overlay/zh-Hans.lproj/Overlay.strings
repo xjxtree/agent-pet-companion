@@ -1,5 +1,6 @@
 /* Agent Pet Companion — Overlay */
 "overlay.idle.detail" = "暂无活跃 Agent 会话。";
+"overlay.placement.save_failed" = "桌宠位置保存失败";
 "overlay.status.running" = "已开始";
 "overlay.status.tool" = "执行工具";
 "overlay.status.needs_input" = "需要输入";

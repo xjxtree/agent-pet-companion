@@ -513,6 +513,22 @@
         }
       }
     },
+    "overlay.placement.save_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed to save the pet position"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "桌宠位置保存失败"
+          }
+        }
+      }
+    },
     "overlay.session.accessibility_format": {
       "localizations": {
         "en": {

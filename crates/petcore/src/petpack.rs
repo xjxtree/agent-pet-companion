@@ -1078,40 +1078,83 @@ fn private_field_words(key: &str) -> Vec<String> {
     words
 }
 
+const PRIVATE_FIELD_CATEGORIES: &[(&str, &str)] = &[
+    ("threadid", "thread_id"),
+    ("turnid", "turn_id"),
+    ("sessionid", "session_id"),
+    ("requestid", "request_id"),
+    ("conversationid", "conversation_id"),
+    ("conversation", "conversation"),
+    ("conversations", "conversation"),
+    ("messagehistory", "messages"),
+    ("messages", "messages"),
+    ("transcript", "transcript"),
+    ("transcripts", "transcript"),
+    ("fulltranscript", "transcript"),
+    ("rawtranscript", "transcript"),
+    ("assistanttext", "conversation_text"),
+    ("assistantmessage", "conversation_text"),
+    ("usermessage", "conversation_text"),
+    ("usermessages", "conversation_text"),
+    ("reasoning", "hidden_reasoning"),
+    ("reasoningtext", "hidden_reasoning"),
+    ("hiddenreasoning", "hidden_reasoning"),
+    ("chainofthought", "hidden_reasoning"),
+    ("internalthoughts", "hidden_reasoning"),
+    ("command", "command"),
+    ("commands", "command"),
+    ("commandline", "command"),
+    ("commandsource", "command"),
+    ("shellcommand", "command"),
+    ("toolargs", "tool_input"),
+    ("toolarguments", "tool_input"),
+    ("toolinput", "tool_input"),
+    ("tooloutput", "tool_output"),
+    ("toolresult", "tool_output"),
+    ("toolresults", "tool_output"),
+    ("toolresponse", "tool_output"),
+    ("toolresponses", "tool_output"),
+    ("stdout", "process_output"),
+    ("stderr", "process_output"),
+    ("environment", "execution_environment"),
+    ("env", "execution_environment"),
+    ("cwd", "execution_environment"),
+    ("workingdirectory", "execution_environment"),
+    ("workspacepath", "execution_environment"),
+    ("token", "credential"),
+    ("accesstoken", "credential"),
+    ("refreshtoken", "credential"),
+    ("apikey", "credential"),
+    ("cookie", "authentication"),
+    ("cookies", "authentication"),
+    ("authorization", "authentication"),
+    ("auth", "authentication"),
+    ("authentication", "authentication"),
+    ("secret", "credential"),
+    ("secrets", "credential"),
+    ("password", "credential"),
+    ("credential", "credential"),
+    ("credentials", "credential"),
+    ("codexappserver", "codex_app_server"),
+];
+
+const AFFIXED_PRIVATE_FIELD_NAMES: &[(&str, &str)] = &[
+    ("threadid", "thread_id"),
+    ("turnid", "turn_id"),
+    ("sessionid", "session_id"),
+    ("requestid", "request_id"),
+    ("conversationid", "conversation_id"),
+    ("apikey", "credential"),
+    ("accesstoken", "credential"),
+    ("refreshtoken", "credential"),
+    ("codexappserver", "codex_app_server"),
+];
+
 fn private_field_category(normalized: &str) -> Option<&'static str> {
-    match normalized {
-        "threadid" => Some("thread_id"),
-        "turnid" => Some("turn_id"),
-        "sessionid" => Some("session_id"),
-        "requestid" => Some("request_id"),
-        "conversationid" => Some("conversation_id"),
-        "conversation" | "conversations" => Some("conversation"),
-        "messagehistory" | "messages" => Some("messages"),
-        "transcript" | "transcripts" | "fulltranscript" | "rawtranscript" => Some("transcript"),
-        "assistanttext" | "assistantmessage" | "usermessage" | "usermessages" => {
-            Some("conversation_text")
-        }
-        "reasoning" | "reasoningtext" | "hiddenreasoning" | "chainofthought"
-        | "internalthoughts" => Some("hidden_reasoning"),
-        "command" | "commands" | "commandline" | "commandsource" | "shellcommand" => {
-            Some("command")
-        }
-        "toolargs" | "toolarguments" | "toolinput" => Some("tool_input"),
-        "tooloutput" | "toolresult" | "toolresults" | "toolresponse" | "toolresponses" => {
-            Some("tool_output")
-        }
-        "stdout" | "stderr" => Some("process_output"),
-        "environment" | "env" | "cwd" | "workingdirectory" | "workspacepath" => {
-            Some("execution_environment")
-        }
-        "token" | "accesstoken" | "refreshtoken" | "apikey" => Some("credential"),
-        "cookie" | "cookies" | "authorization" | "auth" | "authentication" => {
-            Some("authentication")
-        }
-        "secret" | "secrets" | "password" | "credential" | "credentials" => Some("credential"),
-        "codexappserver" => Some("codex_app_server"),
-        _ => None,
-    }
+    PRIVATE_FIELD_CATEGORIES
+        .iter()
+        .find(|(name, _)| *name == normalized)
+        .map(|(_, category)| *category)
 }
 
 fn affixed_private_field_category(normalized: &str) -> Option<&'static str> {
@@ -1120,17 +1163,7 @@ fn affixed_private_field_category(normalized: &str) -> Option<&'static str> {
     // Do not extend this to short/generic names such as token, secret, command,
     // or auth: that would reject ordinary creative keys like `tokenized` and
     // `commanding`.
-    for (private_name, category) in [
-        ("threadid", "thread_id"),
-        ("turnid", "turn_id"),
-        ("sessionid", "session_id"),
-        ("requestid", "request_id"),
-        ("conversationid", "conversation_id"),
-        ("apikey", "credential"),
-        ("accesstoken", "credential"),
-        ("refreshtoken", "credential"),
-        ("codexappserver", "codex_app_server"),
-    ] {
+    for (private_name, category) in AFFIXED_PRIVATE_FIELD_NAMES {
         if normalized.len() > private_name.len()
             && (normalized.starts_with(private_name) || normalized.ends_with(private_name))
         {
@@ -4712,6 +4745,68 @@ pub(crate) fn normalize_visible_pixels(image: &mut RgbaImage) {
             *channel = ((u16::from(*channel) * u16::from(alpha) + 127) / 255) as u8;
         }
     }
+}
+
+/// The portable maker skill mirrors this crate's producer-privacy tables in
+/// Python. Both sides fail closed, so a rule added on only one side silently
+/// weakens the other. This test reads the shipped skill source and rejects
+/// drift in either direction.
+#[test]
+fn python_skill_privacy_tables_stay_in_sync() {
+    let python_source =
+        include_str!("../../../skills/agent-pet-maker/scripts/petpack_workspace.py");
+
+    let python_categories: Vec<(&str, &str)> = python_source
+        .split("PRIVATE_FIELD_CATEGORIES = {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .map(|block| {
+            block
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim().strip_suffix(",")?;
+                    let line = line.strip_prefix('"')?;
+                    let (name, category) = line.split_once("\": \"")?;
+                    let category = category.strip_suffix('"')?;
+                    Some((name, category))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !python_categories.is_empty(),
+        "failed to parse PRIVATE_FIELD_CATEGORIES from the skill source"
+    );
+
+    let rust_categories: Vec<(&str, &str)> = PRIVATE_FIELD_CATEGORIES.to_vec();
+    assert_eq!(
+        rust_categories, python_categories,
+        "producer-privacy category tables differ between petpack.rs and the portable skill"
+    );
+
+    let python_affixed: Vec<(&str, &str)> = python_source
+        .split("for private_name, category in (")
+        .nth(1)
+        .and_then(|rest| rest.split("):").next())
+        .map(|block| {
+            block
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim().strip_suffix(",")?;
+                    let line = line.strip_prefix("(")?.strip_suffix(")")?;
+                    let (name, category) = line.split_once(", ")?;
+                    let name = name.trim_matches('"');
+                    let category = category.trim_matches('"');
+                    Some((name, category))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let rust_affixed: Vec<(&str, &str)> = AFFIXED_PRIVATE_FIELD_NAMES.to_vec();
+    assert_eq!(
+        rust_affixed, python_affixed,
+        "affixed privacy-name lists differ between petpack.rs and the portable skill"
+    );
 }
 
 #[cfg(test)]

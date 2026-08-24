@@ -914,8 +914,7 @@ fn regular_file_matches(
         };
         let opened = rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?;
         if !rustix::fs::FileType::from_raw_mode(opened.st_mode).is_dir()
-            || observed.st_dev != opened.st_dev
-            || observed.st_ino != opened.st_ino
+            || !crate::fs_identity::same_file(&observed, &opened)
         {
             return Ok(false);
         }
@@ -947,8 +946,7 @@ fn regular_file_matches(
     };
     let opened = rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?;
     if !rustix::fs::FileType::from_raw_mode(opened.st_mode).is_file()
-        || observed.st_dev != opened.st_dev
-        || observed.st_ino != opened.st_ino
+        || !crate::fs_identity::same_file(&observed, &opened)
         || observed.st_size != opened.st_size
         || u64::try_from(opened.st_size).unwrap_or(u64::MAX) != expected.len() as u64
         || (opened.st_mode & 0o111 != 0) != expected_executable
@@ -962,8 +960,7 @@ fn regular_file_matches(
         .read_to_end(&mut observed)?;
     let final_metadata = rustix::fs::fstat(&handle).map_err(std::io::Error::from)?;
     Ok(observed == expected
-        && final_metadata.st_dev == opened.st_dev
-        && final_metadata.st_ino == opened.st_ino
+        && crate::fs_identity::same_file(&final_metadata, &opened)
         && final_metadata.st_size == opened.st_size
         && final_metadata.st_mode == opened.st_mode)
 }
@@ -1028,8 +1025,7 @@ fn tree_contains_only_bundle(root: &File) -> Result<bool> {
                 };
                 let opened = rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?;
                 if !rustix::fs::FileType::from_raw_mode(opened.st_mode).is_dir()
-                    || observed.st_dev != opened.st_dev
-                    || observed.st_ino != opened.st_ino
+                    || !crate::fs_identity::same_file(&observed, &opened)
                 {
                     return Ok(false);
                 }
@@ -1066,8 +1062,7 @@ fn read_receipt(path: &Path) -> Result<ReceiptState> {
         .read_to_end(&mut bytes)?;
     let final_metadata = rustix::fs::fstat(&handle).map_err(std::io::Error::from)?;
     if bytes.len() as u64 > MAX_RECEIPT_BYTES
-        || final_metadata.st_dev != opened.st_dev
-        || final_metadata.st_ino != opened.st_ino
+        || !crate::fs_identity::same_file(&final_metadata, &opened)
         || final_metadata.st_size != opened.st_size
         || final_metadata.st_mode != opened.st_mode
     {

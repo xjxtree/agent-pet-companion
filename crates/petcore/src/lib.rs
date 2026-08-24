@@ -7,6 +7,7 @@ pub mod connections;
 pub mod daemon;
 pub mod diagnostics;
 pub mod event_envelope;
+pub mod fs_identity;
 pub mod generation;
 pub mod interaction_attestation;
 pub mod launch_agent;
@@ -42,10 +43,35 @@ pub enum PetCoreError {
     Zip(#[from] zip::result::ZipError),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    // The rendered form is the exact JSON-RPC wire message, so display and
+    // wire stay byte-identical by construction.
+    #[error("{0}")]
+    InvalidParams(String),
     #[error("validation failed: {0}")]
     Validation(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("generation_active_conflict: {active_job}")]
+    GenerationConflict { active_job: serde_json::Value },
+}
+
+impl PetCoreError {
+    /// Classifies the error into the same coarse buckets that existed before
+    /// `InvalidParams` and `GenerationConflict` were split out of
+    /// `InvalidRequest` and `Conflict`.
+    pub fn is_invalid_request_class(&self) -> bool {
+        matches!(
+            self,
+            PetCoreError::InvalidRequest(_) | PetCoreError::InvalidParams(_)
+        )
+    }
+
+    pub fn is_conflict_class(&self) -> bool {
+        matches!(
+            self,
+            PetCoreError::Conflict(_) | PetCoreError::GenerationConflict { .. }
+        )
+    }
 }
 
 pub fn now_rfc3339() -> String {

@@ -1,9 +1,5 @@
 use super::*;
 
-pub(super) fn owns(method: &str) -> bool {
-    method.starts_with("pet.") || method.starts_with("petpack.")
-}
-
 pub(super) fn handle(state: &CoreState, request: RpcRequest) -> Result<Value> {
     match request.method.as_str() {
         "pet.list" => Ok(json!(list_pets_with_revision_metadata(state)?)),
