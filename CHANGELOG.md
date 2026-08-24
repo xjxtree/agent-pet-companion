@@ -14,6 +14,18 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-24
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260824-engineering-debt-localization -->
+- Connection check, repair, and uninstall results and the pet-position save-failure notice now resolve through the localization tables, so English-locale users see English copy instead of mixed Chinese. Chinese copy is unchanged.
+
+  连接检查、修复、卸载的结果文案与桌宠位置保存失败提示改经本地化表解析，英文界面不再混入中文文案；中文界面文案保持不变。
+<!-- apc-fragment:20260824-pr54-review-findings -->
+- Queued PetCore requests now cancel before opening socket resources, and exhausted pet-position saves surface a localized retry banner until persistence succeeds.
+
+  排队中的 PetCore 请求现在会在占用 Socket 资源前响应取消；桌宠位置保存重试耗尽后会显示本地化重试横幅，并在持久化成功后自动消失。
 ## [0.5.1] - 2026-08-19
 
 ### Changed / 变更
