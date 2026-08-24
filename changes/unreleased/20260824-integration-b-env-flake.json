@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "testing",
+  "summary_en": "A concurrency flake in the PetCore integration suite is fixed: a transport test's process-wide Studio turn-timeout override could leak into an isolated generation-lifecycle child process and shrink its real 25-minute turn timeout to seconds, surfacing later as an unrelated terminal-message timeout. Isolated children now strip every sibling test's process-wide override and are spawned while holding the process-state lock; a parity test keeps the strip list in sync with the sibling suite.",
+  "summary_zh": "修复 PetCore 集成测试的一个并发 flake：传输层测试进程级设置的 Studio turn 超时覆盖变量可能泄漏进隔离子进程，把真实 25 分钟 turn 超时压成数秒，随后以无关的终态消息超时形式暴露。隔离子进程现在会剥离兄弟测试的全部进程级覆盖变量，并在派生时持有进程状态锁；另加奇偶校验测试保证剥离清单与兄弟套件保持同步。"
+}

@@ -15,17 +15,39 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const ISOLATED_ENV_TEST: &str = "APC_GENERATION_LIFECYCLE_ISOLATED_TEST";
+/// Keys stripped from every isolated child. Besides the fake-server controls
+/// this file owns, every process-wide override that a sibling integration_b
+/// test can hold must be listed: the child inherits the shared parent
+/// environment at spawn time, and a leaked override (for example
+/// `APC_TEST_PET_STUDIO_TURN_TIMEOUT_MS=5000` from the transport suite)
+/// silently turns a real 25-minute Studio turn timeout into seconds.
 const ISOLATED_ENV_KEYS: &[&str] = &[
     "CODEX_APP_SERVER_CMD",
     "APC_FAKE_APP_SERVER_WAIT_FILE",
     "APC_FAKE_APP_SERVER_ARCHIVE_FILE",
     "APC_FAKE_APP_SERVER_ARCHIVE_FAIL_ONCE_FILE",
     "APC_FAKE_APP_SERVER_JOB_CWD",
+    "APC_TEST_PET_STUDIO_TURN_TIMEOUT_MS",
+    "APC_TEST_EXTERNAL_CHECKPOINT_ELAPSED_MS",
+    "APC_TEST_TURN_COUNT_FILE",
+    "APC_TEST_INTERRUPT_COUNT_FILE",
+    "APC_TEST_JOB_DIR",
+    "APC_TEST_JOB_CWD",
+    "APC_TEST_ACTIVITY_PHASE_FILE",
+    "APC_TEST_HELPER_PID_FILE",
+    "APC_TEST_HELPER_EXIT_FILE",
+    "APC_TEST_INTERRUPT_FILE",
+    "APC_REQUIRE_EXTERNAL_SKILL_SOURCE",
+    "APC_REQUIRE_SKILL_FULL_SOURCE",
 ];
 
 /// Runs environment-mutating scenarios in separate processes. Rust's test
 /// harness can execute the parents concurrently, while every child receives
 /// its own process environment and exact single-test filter.
+///
+/// The spawn takes the process-state lock: a sibling integration_b test can
+/// hold an `APC_TEST_*` override in the shared parent environment while this
+/// test spawns, and the child would otherwise inherit that value mid-flight.
 fn run_in_isolated_process(test_name: &str) -> bool {
     let exact_test_name = format!("generation_lifecycle::{test_name}");
     if let Some(active_test) = std::env::var_os(ISOLATED_ENV_TEST) {
@@ -37,6 +59,7 @@ fn run_in_isolated_process(test_name: &str) -> bool {
         return false;
     }
 
+    let _lock = crate::test_support::lock_process_state();
     let mut command = Command::new(std::env::current_exe().expect("current test executable"));
     command
         .arg("--exact")
@@ -1355,5 +1378,75 @@ fn generation_lifecycle_cancel_is_noop_for_failed_terminal_job() {
     assert_eq!(
         terminal_count(&generation_messages(&state, job_id), "generation_canceled"),
         0
+    );
+}
+
+/// A sibling integration_b test that sets a process-wide environment override
+/// while this file's isolated children spawn can leak that value into the
+/// child unless the key is stripped here. Parse the sibling source instead of
+/// duplicating the key list by hand, so adding a new override without
+/// registering it in `ISOLATED_ENV_KEYS` fails this test instead of becoming
+/// the next timing flake.
+#[test]
+fn isolated_child_environment_strips_every_sibling_process_wide_override() {
+    let sibling = include_str!("app_server_transport.rs");
+    let mut stripped: Vec<&str> = ISOLATED_ENV_KEYS.to_vec();
+    stripped.push(ISOLATED_ENV_TEST);
+    let mut unregistered: Vec<String> = Vec::new();
+    for (index, line) in sibling.lines().enumerate() {
+        let Some((_, rest)) = line.split_once("EnvGuard::set(") else {
+            continue;
+        };
+        let Some(rest) = rest.trim().strip_prefix('"') else {
+            continue;
+        };
+        let Some(key) = rest.split('"').next() else {
+            continue;
+        };
+        if !stripped.contains(&key) {
+            unregistered.push(format!("line {}: {}", index + 1, key));
+        }
+    }
+    assert!(
+        unregistered.is_empty(),
+        "sibling process-wide env overrides missing from ISOLATED_ENV_KEYS: {unregistered:?}"
+    );
+}
+
+/// Reproduces the original flake trigger: a sibling test holds the Studio
+/// turn-timeout override in the shared parent environment while an isolated
+/// child is spawned. The child must never observe it, or a real 25-minute
+/// turn timeout silently shrinks to seconds and surfaces as an unrelated
+/// `wait_for_terminal_message` timeout hundreds of lines away.
+#[test]
+fn isolated_child_spawn_clears_leaked_studio_turn_timeout_override() {
+    const TEST_NAME: &str =
+        "generation_lifecycle::isolated_child_spawn_clears_leaked_studio_turn_timeout_override";
+    if std::env::var_os(ISOLATED_ENV_TEST).is_some() {
+        assert!(
+            std::env::var_os("APC_TEST_PET_STUDIO_TURN_TIMEOUT_MS").is_none(),
+            "isolated child inherited APC_TEST_PET_STUDIO_TURN_TIMEOUT_MS"
+        );
+        return;
+    }
+
+    let _leaked = EnvVarGuard::set("APC_TEST_PET_STUDIO_TURN_TIMEOUT_MS", "5000");
+    let _lock = crate::test_support::lock_process_state();
+    let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+    command
+        .arg("--exact")
+        .arg(TEST_NAME)
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(ISOLATED_ENV_TEST, TEST_NAME);
+    for key in ISOLATED_ENV_KEYS {
+        command.env_remove(key);
+    }
+    let output = command.output().expect("launch isolated env probe child");
+    assert!(
+        output.status.success(),
+        "isolated child saw a leaked env override\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }

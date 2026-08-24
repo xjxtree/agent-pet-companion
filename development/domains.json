@@ -441,6 +441,10 @@
           "risk": "amber"
         },
         {
+          "path": "crates/petcore/tests/integration_b/**",
+          "risk": "amber"
+        },
+        {
           "path": "crates/petcore-types/src/**",
           "risk": "amber"
         },
