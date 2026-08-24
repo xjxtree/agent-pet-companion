@@ -91,27 +91,31 @@ public actor PetCoreTransport {
         guard seconds > 0 else {
             throw PetCoreTransportError.timedOut
         }
-        let operation = try SocketRequestOperation(
-            socketPath: socketPath,
-            request: frame,
-            timeout: seconds,
-            maximumFrameBytes: Self.maximumFrameBytes
+        let timeoutNanoseconds = UInt64(
+            min(seconds * 1_000_000_000, Double(UInt64.max))
         )
-
-        await requestGate.wait()
-        defer { requestGate.signal() }
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                ioQueue.async {
-                    do {
-                        continuation.resume(returning: try operation.run())
-                    } catch {
-                        continuation.resume(throwing: error)
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            &+ timeoutNanoseconds
+        return try await requestGate.withPermit {
+            let operation = try SocketRequestOperation(
+                socketPath: socketPath,
+                request: frame,
+                deadline: deadline,
+                maximumFrameBytes: Self.maximumFrameBytes
+            )
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    ioQueue.async {
+                        do {
+                            continuation.resume(returning: try operation.run())
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
                     }
                 }
+            } onCancel: {
+                operation.cancel()
             }
-        } onCancel: {
-            operation.cancel()
         }
     }
 }
@@ -127,12 +131,16 @@ private final class SocketRequestOperation: @unchecked Sendable {
     private var cancelled = false
     private var finished = false
 
-    init(socketPath: String, request: Data, timeout: TimeInterval, maximumFrameBytes: Int) throws {
+    init(
+        socketPath: String,
+        request: Data,
+        deadline: UInt64,
+        maximumFrameBytes: Int
+    ) throws {
         self.socketPath = socketPath
         self.request = request
+        self.deadline = deadline
         self.maximumFrameBytes = maximumFrameBytes
-        let timeoutNanoseconds = UInt64(min(timeout * 1_000_000_000, Double(UInt64.max)))
-        deadline = DispatchTime.now().uptimeNanoseconds &+ timeoutNanoseconds
 
         var descriptors = [Int32](repeating: -1, count: 2)
         let pipeResult = descriptors.withUnsafeMutableBufferPointer { buffer in
@@ -352,26 +360,57 @@ private extension Duration {
 /// thread, so bounding concurrency never grows the concurrent queue's thread
 /// pool.
 final class BoundedConcurrencyGate: @unchecked Sendable {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     private let lock = NSLock()
     private let limit: Int
     private var running = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
 
     init(limit: Int) {
         self.limit = max(1, limit)
     }
 
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if running < limit {
-                running += 1
-                lock.unlock()
-                continuation.resume()
-            } else {
-                waiters.append(continuation)
-                lock.unlock()
+    func withPermit<T>(
+        isolation: isolated (any Actor)? = #isolation,
+        _ operation: () async throws -> T
+    ) async throws -> sending T {
+        try await wait()
+        defer { signal() }
+        guard !Task.isCancelled else {
+            throw PetCoreTransportError.cancelled
+        }
+        return try await operation()
+    }
+
+    func wait() async throws {
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume(
+                        throwing: PetCoreTransportError.cancelled
+                    )
+                } else if running < limit {
+                    running += 1
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiters.append(Waiter(
+                        id: waiterID,
+                        continuation: continuation
+                    ))
+                    lock.unlock()
+                }
             }
+        } onCancel: {
+            cancelWaiter(waiterID)
         }
     }
 
@@ -381,10 +420,30 @@ final class BoundedConcurrencyGate: @unchecked Sendable {
             let next = waiters.removeFirst()
             lock.unlock()
             // Hand the permit straight to the next waiter.
-            next.resume()
+            next.continuation.resume()
             return
         }
         running = max(0, running - 1)
         lock.unlock()
+    }
+
+    var queuedWaiterCount: Int {
+        lock.lock()
+        let count = waiters.count
+        lock.unlock()
+        return count
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        lock.lock()
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            lock.unlock()
+            return
+        }
+        let waiter = waiters.remove(at: index)
+        lock.unlock()
+        waiter.continuation.resume(
+            throwing: PetCoreTransportError.cancelled
+        )
     }
 }

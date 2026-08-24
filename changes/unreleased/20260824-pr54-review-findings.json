@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "macos-runtime",
+  "summary_en": "Queued PetCore requests now cancel before opening socket resources, and exhausted pet-position saves surface a localized retry banner until persistence succeeds.",
+  "summary_zh": "排队中的 PetCore 请求现在会在占用 Socket 资源前响应取消；桌宠位置保存重试耗尽后会显示本地化重试横幅，并在持久化成功后自动消失。"
+}
