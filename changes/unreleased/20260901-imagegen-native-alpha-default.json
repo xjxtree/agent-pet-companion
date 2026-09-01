@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Changed",
+  "scope": "maker",
+  "summary_en": "Pet creation now uses ChatGPT/Codex built-in image generation with genuine native-Alpha PNG sources by default, while retaining an explicit chroma-key compatibility path for opaque-only providers.",
+  "summary_zh": "宠物制作现默认使用 ChatGPT/Codex 内置生图生成真实原生 Alpha PNG 来源图，同时为仅支持不透明输出的提供方保留显式纯色抠图兼容路径。"
+}

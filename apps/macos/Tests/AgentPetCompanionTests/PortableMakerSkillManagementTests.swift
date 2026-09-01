@@ -38,7 +38,7 @@ struct PortableMakerSkillManagementTests {
             case "portable_skill.install":
                 statusObject(
                     state: "current",
-                    installedVersion: "0.5.6",
+                    installedVersion: "0.5.7",
                     managed: true,
                     targetExists: true,
                     canReinstall: true,
@@ -130,7 +130,7 @@ struct PortableMakerSkillManagementTests {
             "name": "agent-pet-maker",
             "state": state,
             "target_display_path": "~/agent/skills/agent-pet-maker",
-            "expected_version": "0.5.6",
+            "expected_version": "0.5.7",
             "installed_version": installedVersion ?? NSNull(),
             "managed": managed,
             "target_exists": targetExists,

@@ -27,7 +27,8 @@ After every image call:
 1. Save the untouched decoded image outside `petpack-source` and record its
    actual dimensions.
 2. Verify exact frame count/order, distinct poses, full-body completeness,
-   identity, anatomy, props, camera, scale, spacing, background, and action.
+   identity, anatomy, props, camera, scale, spacing, the selected transparency
+   source contract, and action.
 3. Record one stable equal-size source-pixel rectangle per cell. Preserve the
    action's baseline and intended translation; never fit or recenter poses
    independently by their subject bounds.
@@ -47,8 +48,8 @@ Choose the tier first, then a provider whose real decoded pixels can satisfy it:
 
 | Image path | Qualified tiers | Rule |
 | --- | --- | --- |
-| ChatGPT/Codex built-in `imagegen` | `low`, `standard` | Its approximate 1K–2K decoded output envelope is not qualified for `high`. |
-| Dreamina 5.0 Pro | `low`, `standard`, `high` | For `high`, follow `dreamina-high-production.md` and verify the returned pixels. |
+| ChatGPT/Codex built-in `imagegen` | `low`, `standard` | Default image path and default `native_alpha` source; its approximate 1K–2K decoded output envelope is not qualified for `high`. |
+| Dreamina 5.0 Pro | `low`, `standard`, `high` | For `high`, follow `dreamina-high-production.md`, use its explicit `chroma_key` compatibility source, and verify the returned pixels. |
 | Another provider or user artwork | Any tier proven by its pixels | Apply the same capacity, transparency, motion, and final gates. |
 
 Do not repeatedly attempt built-in `imagegen` for `high`, combine separate
@@ -65,7 +66,8 @@ image-to-image action.
 
 Generate one action per call and normally keep all 4–8 ordered poses in one
 batch. Use one action card that states the intent, exact frame count, left-to-
-right beat order, playback outcome, safe margins, and flat-background rules.
+right beat order, playback outcome, safe margins, and the selected
+native-Alpha or chroma compatibility rules.
 Immediately inspect the result before another call.
 
 Every multi-frame action uses two script-generated structural references: a
@@ -155,21 +157,29 @@ Every action prompt must also require:
 - the recorded full-body pixel height, head size, shoulder width, baseline, and
   safe crop occupancy from the size-reference image;
 - no touching, overlap, or cropped hair, appendages, hands, feet, or heels;
-- a perfectly uniform textureless solid background with no floor, shadow,
-  reflection, text, border, or floating effect;
+- for built-in `imagegen`, a genuinely transparent canvas with Alpha 0 exterior
+  and gutters, no checkerboard, floor, shadow, reflection, glow, text, border,
+  watermark, solid backdrop, gradient backdrop, or floating effect;
+- for an explicit `chroma_key` source, one perfectly uniform textureless solid
+  background with no floor, shadow, reflection, text, border, or floating
+  effect;
 - `CRITICAL SCALE LOCK` for jumps or other scale-sensitive motion;
 - `contact -> settle -> passing -> advance` with alternating limbs for a walk;
 - correctly connected feet and heels in every relevant pose.
 
-Choose the output chroma background by the transparency contract. The guide's
-magenta canvas is structural input, not an instruction to copy its color.
+Use `native_alpha` for built-in `imagegen`; choose a chroma background only for
+the compatibility route defined by the transparency contract. The guide's
+magenta canvas is structural input, not an instruction to copy its color or
+opacity.
 
 ## Failure routing
 
 - Corner marks: move subjects away from all four corners and preserve exterior
   blank space.
-- Gradient or paneled background: strengthen `perfectly uniform, textureless
-  solid background`.
+- Opaque, checkerboard, gradient, or paneled built-in output: regenerate only
+  the failing action with the genuine-transparent-canvas constraints.
+- Gradient or paneled chroma output: strengthen `perfectly uniform,
+  textureless solid background`.
 - Copied guide figures: require complete replacement and forbid retained guide
   pixels.
 - Scale drift or oversized figures: do not fit cells independently. Regenerate
