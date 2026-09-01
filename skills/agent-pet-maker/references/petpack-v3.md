@@ -92,10 +92,6 @@ duplicate, interpolate, or catch up frames.
 - Name frames in zero-padded ASCII natural order, such as `0000.png`.
 - Keep at least one transparent pixel on every edge and preserve identity,
   anatomy, costume, palette, and prop relationships.
-- Built-in ChatGPT/Codex `imagegen` production defaults to genuine native-Alpha
-  source PNGs. Preserve their authored Alpha through the shared version 2
-  frame-preparation path; opaque chroma input is an explicit compatibility
-  source mode, not the built-in default.
 - Author genuine adjacent poses with a readable action and deliberate loop,
   settle, or return. Do not create filler with duplicates, crossfades, morphs,
   optical flow, transformed copies, or procedural interpolation.

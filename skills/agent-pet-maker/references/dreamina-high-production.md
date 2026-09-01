@@ -4,10 +4,6 @@ Use this provider-specific guide only when Dreamina is the selected image path.
 Apply the generic visual, transparency, timing, QA, and security contracts in
 the sibling references without repeating them here.
 
-Dreamina high production uses the shared version 2 frame job with explicit
-`source_mode: chroma_key`; the native-Alpha default is reserved for image paths
-whose decoded output proves genuine transparency.
-
 ## Required parameters
 
 Use `--model_version=5.0Pro` for every base and action request. Before the first

@@ -180,8 +180,6 @@ class ContractSynchronizationTests(unittest.TestCase):
             "approximate 1K–2K",
             "`low`, `standard`",
             "`high` 576×624",
-            "default `native_alpha`",
-            "genuinely transparent",
         ):
             self.assertIn(required, visual + studio)
 

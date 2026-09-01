@@ -37,17 +37,12 @@ python3 <skill-dir>/scripts/petpack_workspace.py prepare \
 ```
 
 Default to `standard` and the creation timing in `petpack-v3.md`. Honor an
-explicit supported tier or another complete valid V3 timing. For `low` and
-`standard`, use ChatGPT/Codex built-in `imagegen` with genuine transparent PNG
-output by default unless the user selected another image source. Establish one
-canonical identity and action card, generate one action per batch, copy the
-selected built-in original from `$CODEX_HOME/generated_images` into the private
-workspace, and create the action's deterministic pose guide plus separate
-deterministic size-reference image from one shared geometry record. Verify
-decoded Alpha, source capacity, and subject scale, crop without resampling, and
-derive runtime PNGs through `prepare_transparent_frames.py` with the version 2
-`native_alpha` job mode. Use explicit `chroma_key` mode only for a selected
-opaque-only source.
+explicit supported tier or another complete valid V3 timing. Establish one
+canonical identity and action card, generate one action per batch, retain the
+untouched result, and create the action's deterministic pose guide plus
+separate deterministic size-reference image from one shared geometry record.
+Verify source capacity and subject scale, crop without resampling, and derive
+runtime PNGs through `prepare_transparent_frames.py`.
 
 An additional batch is allowed only for a non-capacity continuity problem in an
 already qualified tier. Record the reason outside the package, ground the next
@@ -75,9 +70,8 @@ For each requested state change:
 2. Write the complete intended timing and action card.
 3. Regenerate the action's pose guide and size-reference image from one shared
    geometry record, then regenerate or edit the complete sequence.
-4. Run each new crop through the shared transparency script with its actual
-   `native_alpha` or `chroma_key` source mode; never reprocess an unchanged
-   frame.
+4. Run each new crop through the shared transparency script; never reprocess an
+   unchanged frame.
 5. Match PNG count to the timing-array length.
 6. Rerun state Motion QA before continuing.
 

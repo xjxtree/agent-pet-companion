@@ -1,6 +1,6 @@
 ---
 name: agent-pet-maker
-version: 0.5.7
+version: 0.5.8
 description: Create or revise portable Agent Pet Companion .petpack V3 pets at low, standard, or high resolution from text and optional reference images. Use for new pets, exported-package revisions, action or timing edits, provider-aware image production, motion QA, packaging, or an explicitly requested install.
 ---
 
@@ -62,10 +62,8 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
    active source proves a complete 12:13 crop of at least that size for every
    frame. Built-in ChatGPT/Codex `imagegen` is qualified only for `low` and
    `standard`; route `high` to Dreamina 5.0 Pro or another source-capable
-   provider. For `low` and `standard`, use built-in `imagegen` by default unless
-   the user selected another source, and request genuine transparent PNG
-   output. Never upscale, pad, combine batches to manufacture pixels, silently
-   downgrade, or silently change image source.
+   provider. Never upscale, pad, combine batches to manufacture pixels, or
+   silently downgrade.
 3. For a new pet, use the creation defaults in `petpack-v3.md` unless the user
    specifies another valid complete timing. For a revision, preserve all
    authored timing and unchanged state files byte-for-byte unless the user asks
@@ -77,19 +75,15 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
    `global_scale` record. Pass the character base, pose guide, and size
    reference in that order; `high` production may not rely on text-only equal-
    scale control. Verify the returned frame count, order, identity, anatomy,
-   action, spacing, subject scale, crop capacity, decoded Alpha, and selected
-   source-mode contract before accepting it. Copy selected built-in outputs
-   from `$CODEX_HOME/generated_images` into the private workspace while leaving
-   the originals in place.
+   action, spacing, subject scale, crop capacity, and flat background before
+   accepting it.
 5. Crop stable equal-size 12:13 source windows without resampling. Run every
    new or regenerated crop through the shared transparency script; package only
    its exact-tier runtime PNGs. Accept a state only when the report and every
    frame say `"ok": true` and the multi-background previews pass inspection.
-   Built-in `imagegen` uses the version 2 `native_alpha` job mode, which
-   preserves authored Alpha and nontransparent RGBA. An explicit opaque-only
-   source uses `chroma_key`; its isolated low-Alpha fringe warning still
-   requires preview review but is not a reason to search nearby crop,
-   key-color, or feather values.
+   The script performs its closed runtime-size RGB edge repair automatically;
+   an isolated low-Alpha fringe warning still requires preview review but is
+   not a reason to search nearby crop, key-color, or feather values.
 
    ```bash
    python3 <skill-dir>/scripts/prepare_transparent_frames.py \
@@ -98,14 +92,16 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
      --preview-dir /absolute/workspace/transparency-previews
    ```
 
-   On a native-Alpha failure, rerun only the failing action with the exact
-   transparent-canvas constraints; do not rematte, contract, feather, or
-   silently switch it to chroma. For explicit `chroma_key` input, start from
-   the recorded shared crop and automatic key, permit at most one
-   `--edge-contract 1` retry, and add `--edge-feather 0.25` only for a visibly
-   stair-stepped contraction. Never enumerate adjacent crops, similar keys, or
-   feather values. If the bounded path still fails, regenerate on a flatter
-   contrasting background.
+   On a hard transparency failure, rerun only the failing frames. Start from
+   the recorded shared crop geometry and automatic key color. Permit at most
+   one `--edge-contract 1` retry, then add `--edge-feather 0.25` only when the
+   contracted preview visibly stair-steps. Change the shared crop only for a
+   proven crop-geometry error, and use an explicit key only when automatic key
+   sampling or a real subject-color conflict is visibly wrong. Never enumerate
+   adjacent crops, similar key colors, or feather values. If this bounded path
+   still fails, regenerate the opaque source with a flatter, more contrasting
+   background; if the same source defect recurs, change the production prompt
+   or action design instead of extending the search.
 
 6. Run `motion-qa --state <state>` immediately after each accepted state. After
    every run, compare its per-frame body-anchor and baseline path with the
