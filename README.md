@@ -60,6 +60,9 @@ In **AI Pet Maker**, describe the appearance, style, and important traits you wa
 </p>
 
 - In-App creation supports low and standard resolution.
+- Built-in ChatGPT/Codex image generation is the default image path and creates
+  native transparent source PNGs; the shared producer still verifies decoded
+  Alpha, source size, edges, motion, and the final `.petpack` before import.
 - Creation progress is retained, and you can answer questions inside the App when a task needs your input.
 - The **Universal Pet Maker Skill** button installs and manages the provider-neutral `agent-pet-maker` workflow at `~/agent/skills/agent-pet-maker`. The App shows its requirements and version but leaves Agent directory discovery for you to confirm.
 - You can also import compatible `.petpack` V3 packages, including high-resolution packages made by external workflows.

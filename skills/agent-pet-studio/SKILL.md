@@ -1,6 +1,6 @@
 ---
 name: agent-pet-studio
-version: 0.5.6
+version: 0.5.7
 description: Generate or revise low- or standard-resolution Agent Pet Companion .petpack V3 assets from an in-app Studio job, using real image production when external full source is required and a portable Maker handoff for high resolution. Use only inside Agent Pet Companion Studio generation jobs.
 ---
 
@@ -44,7 +44,8 @@ built-in ChatGPT/Codex `imagegen` support only those tiers. The decoded
 user to portable Agent Pet Maker with Dreamina 5.0 Pro or another source whose
 real pixels satisfy the shared capacity gate. Never upscale, alias, split
 batches to manufacture resolution, downgrade silently, or accept another
-quality name.
+quality name. In external full-source mode, built-in `imagegen` with genuine
+transparent PNG output is the default image path.
 
 ## Choose one output mode
 
@@ -86,17 +87,17 @@ All modes remain limited to `low` and `standard`.
   deterministic pose guide and separate deterministic size-reference image;
   all three references share one recorded slot, crop, baseline, and
   `global_scale` geometry, and text-only equal-scale control is insufficient.
-  Generate fully opaque flat-background source art; inspect actual decoded
-  dimensions, subject scale, and stable equal-size 12:13 crops; use
+  Ask built-in `imagegen` for a genuinely transparent canvas, copy selected
+  originals from `$CODEX_HOME/generated_images` into the private job workspace,
+  and inspect actual decoded Alpha, dimensions, subject scale, and stable
+  equal-size 12:13 crops. Use the shared version 2 `native_alpha` job mode in
   `../agent-pet-maker/scripts/prepare_transparent_frames.py` for every new or
-  regenerated frame. Its closed runtime-size RGB repair and bounded isolated
-  low-Alpha fringe warning are authoritative. On a hard failure, rerun only the
-  failing frames: allow one edge-contraction retry and add 0.25-pixel feathering
-  only for a visibly stair-stepped contraction. Do not enumerate adjacent
-  crops, similar key colors, or feather values; change the shared crop only for
-  proven geometry error and the key only for visibly wrong automatic sampling
-  or a real subject-color conflict. If the bounded retry still fails,
-  regenerate the opaque source on a flatter contrasting background. Then run
+  regenerated frame; it preserves authored Alpha and nontransparent RGBA. On a
+  hard native-Alpha failure, regenerate only the failing action with the exact
+  transparent-canvas constraints; do not rematte, contract, feather, or
+  silently switch to chroma. An explicitly selected opaque-only provider uses
+  the shared `chroma_key` compatibility and bounded fallback rules. Do not
+  enumerate adjacent crops, similar key colors, or feather values. Then run
   incremental Motion QA before starting the next state. Compare the reported
   per-frame body-anchor and baseline path with the action card and deterministic
   pose guide. Preserve intentional travel and authored easing. When

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract tests for deterministic flat-chroma transparent-frame production."""
+"""Contract tests for deterministic native-Alpha and chroma frame production."""
 
 from __future__ import annotations
 
@@ -53,6 +53,8 @@ class TransparentFramePipelineTests(unittest.TestCase):
         target_size: dict[str, int] | None = None,
         foreground_mask: Path | None = None,
         extra_frame: dict[str, object] | None = None,
+        schema_version: str = "apc.transparent-frame-jobs.v1",
+        source_mode: str | None = None,
     ) -> tuple[Path, Path, Path, Path, Path]:
         master = self.root / "masters" / "idle-000.png"
         output = self.root / "petpack-source" / "assets" / "frames" / "idle" / "000.png"
@@ -69,17 +71,16 @@ class TransparentFramePipelineTests(unittest.TestCase):
         if extra_frame:
             frame.update(extra_frame)
         jobs = self.root / "transparent-frame-jobs.json"
-        jobs.write_text(
-            json.dumps(
-                {
-                    "schema_version": "apc.transparent-frame-jobs.v1",
-                    "target_size": target_size or TARGET_LOW,
-                    "key_color": "auto",
-                    "frames": [frame],
-                }
-            ),
-            encoding="utf-8",
-        )
+        payload: dict[str, object] = {
+            "schema_version": schema_version,
+            "target_size": target_size or TARGET_LOW,
+            "frames": [frame],
+        }
+        if source_mode is not None:
+            payload["source_mode"] = source_mode
+        if schema_version.endswith(".v1") or source_mode == "chroma_key":
+            payload["key_color"] = "auto"
+        jobs.write_text(json.dumps(payload), encoding="utf-8")
         return jobs, report, previews, master, output
 
     def run_pipeline(
@@ -144,6 +145,164 @@ class TransparentFramePipelineTests(unittest.TestCase):
             self.assertTrue(any(0 < value < 255 for value in alpha_values))
         with Image.open(previews / "idle__000.png") as preview:
             self.assertEqual(preview.size, (192 * 5, 208))
+
+    def test_v2_defaults_to_native_alpha_and_preserves_authored_rgba(self) -> None:
+        source = self.root / "native-alpha.png"
+        image = Image.new("RGBA", (192, 208), (12, 34, 56, 0))
+        ImageDraw.Draw(image).ellipse((40, 32, 151, 179), fill=(220, 40, 30, 253))
+        image.putpixel((40, 104), (220, 40, 30, 96))
+        image.save(source)
+        jobs, report_path, previews, master, output = self.write_jobs(
+            source,
+            schema_version="apc.transparent-frame-jobs.v2",
+        )
+
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+        assert report is not None
+        self.assertEqual(report["schema_version"], "apc.transparent-frame-report.v2")
+        self.assertEqual(
+            report["input_schema_version"],
+            "apc.transparent-frame-jobs.v2",
+        )
+        self.assertEqual(report["configuration"]["source_modes"], ["native_alpha"])
+        frame = report["frames"][0]
+        self.assertEqual(frame["source_mode"], "native_alpha")
+        self.assertIsNone(frame["key"])
+        self.assertIsNone(frame["matte"])
+        self.assertTrue(frame["native_alpha"]["alpha_preserved"])
+        self.assertEqual(frame["native_alpha"]["alpha_max"], 253)
+        self.assertGreater(frame["native_alpha"]["transparent_rgb_cleared_pixels"], 0)
+        self.assertEqual(frame["native_alpha"]["nontransparent_rgba_changed_pixels"], 0)
+        self.assertFalse(frame["edge_rgb_reconstruction"]["applied"])
+        self.assertFalse(frame["master"]["qa"]["chroma_key_qa_applied"])
+        self.assertEqual(
+            frame["master"]["qa"]["edge_chroma_fringe"]["disposition"],
+            "not_applicable",
+        )
+        with Image.open(master) as master_image, Image.open(output) as runtime_image:
+            self.assertEqual(master_image.getpixel((0, 0)), (0, 0, 0, 0))
+            self.assertEqual(master_image.getpixel((96, 104)), (220, 40, 30, 253))
+            self.assertEqual(image_values(master_image), image_values(runtime_image))
+
+    def test_v2_native_alpha_performs_one_premultiplied_downscale(self) -> None:
+        source = self.root / "native-alpha-large.png"
+        image = Image.new("RGBA", (384, 416), (0, 0, 0, 0))
+        ImageDraw.Draw(image).ellipse((80, 64, 303, 359), fill=(220, 40, 30, 253))
+        image.save(source)
+        jobs, report_path, previews, master, output = self.write_jobs(
+            source,
+            schema_version="apc.transparent-frame-jobs.v2",
+        )
+
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+        assert report is not None
+        frame = report["frames"][0]
+        self.assertEqual(frame["resize_count"], 1)
+        self.assertEqual(frame["size_normalization"]["mode"], "single_downscale")
+        self.assertEqual(
+            frame["size_normalization"]["filter"],
+            "linear_light_premultiplied_alpha_lanczos",
+        )
+        self.assertFalse(frame["runtime_edge_rgb_reconstruction"]["applied"])
+        with Image.open(master) as master_image, Image.open(output) as runtime_image:
+            self.assertEqual(master_image.size, (384, 416))
+            self.assertEqual(runtime_image.size, (192, 208))
+            self.assertTrue(
+                any(0 < value < 255 for value in image_values(runtime_image.getchannel("A")))
+            )
+
+    def test_v2_native_alpha_rejects_an_opaque_or_fake_transparency_source(self) -> None:
+        source = self.root / "opaque-checkerboard.png"
+        image = Image.new("RGBA", (192, 208), (220, 220, 220, 255))
+        draw = ImageDraw.Draw(image)
+        for y in range(0, 208, 16):
+            for x in range(0, 192, 16):
+                if (x // 16 + y // 16) % 2:
+                    draw.rectangle((x, y, x + 15, y + 15), fill=(180, 180, 180, 255))
+        draw.ellipse((40, 32, 151, 179), fill=RED)
+        image.save(source)
+        jobs, report_path, previews, _, output = self.write_jobs(
+            source,
+            schema_version="apc.transparent-frame-jobs.v2",
+        )
+
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+
+        self.assertEqual(completed.returncode, 1)
+        assert report is not None
+        self.assertEqual(
+            report["frames"][0]["error_code"],
+            "invalid_native_alpha_source",
+        )
+        self.assertFalse(output.exists())
+
+    def test_v2_native_alpha_requires_alpha_zero_canvas_gutters(self) -> None:
+        source = self.root / "alpha-contact.png"
+        image = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
+        ImageDraw.Draw(image).ellipse((40, 32, 151, 179), fill=RED)
+        image.putpixel((0, 104), (220, 40, 30, 1))
+        image.save(source)
+        jobs, report_path, previews, _, _ = self.write_jobs(
+            source,
+            schema_version="apc.transparent-frame-jobs.v2",
+        )
+
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+
+        self.assertEqual(completed.returncode, 1)
+        assert report is not None
+        frame = report["frames"][0]
+        self.assertEqual(frame["master"]["qa"]["border_visible_pixels"], 1)
+        self.assertIn("visible subject pixels touch the frame edge", frame["errors"])
+
+    def test_v2_chroma_key_mode_remains_an_explicit_compatibility_path(self) -> None:
+        source = self.root / "chroma-source.png"
+        image = Image.new("RGBA", (192, 208), GREEN)
+        ImageDraw.Draw(image).ellipse((40, 32, 151, 179), fill=RED)
+        image.save(source)
+        jobs, report_path, previews, _, _ = self.write_jobs(
+            source,
+            schema_version="apc.transparent-frame-jobs.v2",
+            source_mode="chroma_key",
+        )
+
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+        assert report is not None
+        frame = report["frames"][0]
+        self.assertEqual(frame["source_mode"], "chroma_key")
+        self.assertIsNone(frame["native_alpha"])
+        self.assertIsNotNone(frame["key"])
+        self.assertIsNotNone(frame["matte"])
+        self.assertTrue(frame["master"]["qa"]["chroma_key_qa_applied"])
+
+    def test_native_alpha_rejects_chroma_only_edge_fallbacks(self) -> None:
+        source = self.root / "native-alpha.png"
+        image = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
+        ImageDraw.Draw(image).ellipse((40, 32, 151, 179), fill=RED)
+        image.save(source)
+        jobs, report_path, previews, _, _ = self.write_jobs(
+            source,
+            schema_version="apc.transparent-frame-jobs.v2",
+        )
+
+        completed, report = self.run_pipeline(
+            jobs,
+            report_path,
+            previews,
+            "--edge-contract",
+            "1",
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIsNone(report)
+        error = json.loads(completed.stdout)
+        self.assertEqual(error["error"]["code"], "invalid_fallback")
 
     def test_reconstructs_antialiased_edge_without_changing_interior(self) -> None:
         large = Image.new("RGBA", (768, 832), GREEN)
@@ -513,7 +672,7 @@ class TransparentFramePipelineTests(unittest.TestCase):
         self.assertEqual(report["frames"][0]["error_code"], "invalid_chroma_source")
         self.assertFalse(output.exists())
 
-    def test_rejects_upscaling_and_model_native_alpha(self) -> None:
+    def test_v1_compatibility_rejects_upscaling_and_native_alpha_input(self) -> None:
         small_source = self.root / "small.png"
         Image.new("RGBA", (192, 208), GREEN).save(small_source)
         jobs, report_path, previews, _, output = self.write_jobs(
@@ -568,8 +727,9 @@ class SharedSkillContractTests(unittest.TestCase):
             self.assertIn("prepare_transparent_frames.py", normalized)
             self.assertIn("deterministic pose guide", normalized)
             self.assertIn("deterministic size-reference image", normalized)
-            self.assertIn("enumerate adjacent crops", normalized)
-            self.assertIn("0.25", normalized)
+            self.assertIn("native_alpha", normalized)
+            self.assertIn("transparent PNG", normalized)
+            self.assertIn("silently switch", normalized)
 
     def test_shared_reference_forbids_agent_specific_pixel_processing(self) -> None:
         contract = (ROOT / "references" / "transparent-frame-production.md").read_text(
@@ -577,7 +737,12 @@ class SharedSkillContractTests(unittest.TestCase):
         )
         normalized = " ".join(contract.split())
         for required in (
-            "Do not request model-native transparency",
+            "ChatGPT/Codex built-in `imagegen` defaults",
+            "apc.transparent-frame-jobs.v2",
+            "native_alpha",
+            "chroma_key",
+            "preserves the complete authored Alpha plane",
+            "invalid_native_alpha_source",
             "Do not tune its thresholds",
             "linear-light premultiplied-Alpha",
             "at least the runtime target",
@@ -587,7 +752,6 @@ class SharedSkillContractTests(unittest.TestCase):
             '"ok": true',
             "visible_key_pixels",
             "review evidence only",
-            "runtime Alpha boundary",
             "review_warning",
             "0.5 equivalent opaque pixel",
             "Do not stack fallback runs",

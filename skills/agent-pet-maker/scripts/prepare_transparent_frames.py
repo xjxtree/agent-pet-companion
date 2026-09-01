@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build exact-tier transparent pet frames from flat chroma-key source crops.
+"""Build exact-tier pet frames from native-Alpha or flat-chroma source crops.
 
-The pipeline is deliberately opinionated: agents provide crop geometry and an
-optional sure-foreground mask, while matte thresholds, spatial connectivity,
-edge RGB reconstruction, alpha-aware resizing, and QA stay deterministic. A
+Version 2 defaults to preserving genuine source Alpha, which is the production
+path for ChatGPT/Codex built-in imagegen. Version 1 flat-chroma jobs remain
+readable for source providers that cannot emit transparency. In both modes the
+pipeline owns transparent-RGB normalization, alpha-aware resizing, and QA. A
 source crop may match or exceed any supported target tier; the pipeline never
 requires an image model to emit the target dimensions exactly and never
 upscales an undersized crop.
@@ -32,9 +33,11 @@ from PIL import (
 )
 
 
-JOBS_SCHEMA = "apc.transparent-frame-jobs.v1"
-REPORT_SCHEMA = "apc.transparent-frame-report.v1"
-PIPELINE_ID = "apc-spatial-chroma-matte-v3"
+JOBS_SCHEMA = "apc.transparent-frame-jobs.v2"
+COMPATIBILITY_JOBS_SCHEMA = "apc.transparent-frame-jobs.v1"
+REPORT_SCHEMA = "apc.transparent-frame-report.v2"
+PIPELINE_ID = "apc-transparent-source-normalizer-v4"
+SOURCE_MODES = frozenset(("native_alpha", "chroma_key"))
 TARGET_TIERS = {
     (192, 208): "low",
     (384, 416): "standard",
@@ -47,6 +50,7 @@ OPAQUE_DISTANCE_THRESHOLD = 220
 KEY_SIMILARITY_THRESHOLD = 0.92
 KEY_DOMINANCE_THRESHOLD = 8.0
 VISIBLE_ALPHA_THRESHOLD = 16
+MIN_ALPHA_COVERAGE = 0.01
 # A few isolated, barely visible chroma-like samples can be introduced by the
 # one permitted downscale even after the source-resolution matte is clean.
 # Keep this allowance deliberately small and alpha-weighted: it is review
@@ -56,7 +60,13 @@ MINOR_EDGE_FRINGE_MAX_EQUIVALENT_OPAQUE_PIXELS = 0.5
 MINOR_EDGE_FRINGE_MAX_COMPONENT_PIXELS = 2
 JOB_ID = re.compile(r"^[a-z0-9][a-z0-9/_-]{0,127}$")
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
-ALLOWED_TOP_LEVEL_KEYS = {"schema_version", "target_size", "key_color", "frames"}
+ALLOWED_TOP_LEVEL_KEYS = {
+    "schema_version",
+    "target_size",
+    "source_mode",
+    "key_color",
+    "frames",
+}
 ALLOWED_FRAME_KEYS = {
     "id",
     "source",
@@ -64,6 +74,7 @@ ALLOWED_FRAME_KEYS = {
     "master",
     "output",
     "foreground_mask",
+    "source_mode",
     "key_color",
 }
 ALLOWED_CROP_KEYS = {"x", "y", "width", "height"}
@@ -161,6 +172,15 @@ def parse_key_color(value: Any, label: str) -> str | tuple[int, int, int]:
     return tuple(int(value[index : index + 2], 16) for index in (1, 3, 5))
 
 
+def parse_source_mode(value: Any, label: str) -> str:
+    if not isinstance(value, str) or value not in SOURCE_MODES:
+        fail(
+            "invalid_jobs",
+            f"{label} must be one of: {', '.join(sorted(SOURCE_MODES))}",
+        )
+    return value
+
+
 def parse_crop(value: Any) -> dict[str, int] | None:
     if value is None:
         return None
@@ -180,14 +200,38 @@ def parse_crop(value: Any) -> dict[str, int] | None:
     return crop
 
 
-def parse_jobs(path: Path) -> tuple[tuple[int, int], list[dict[str, Any]]]:
+def parse_jobs(
+    path: Path,
+) -> tuple[str, tuple[int, int], list[dict[str, Any]]]:
     require_regular_input(path, "jobs file")
     root = parse_json_strict(path)
     reject_unknown_keys(root, ALLOWED_TOP_LEVEL_KEYS, "jobs JSON")
-    if root.get("schema_version") != JOBS_SCHEMA:
-        fail("invalid_jobs", f"jobs schema_version must be {JOBS_SCHEMA}")
+    schema_version = root.get("schema_version")
+    if schema_version not in {JOBS_SCHEMA, COMPATIBILITY_JOBS_SCHEMA}:
+        fail(
+            "invalid_jobs",
+            "jobs schema_version must be "
+            f"{JOBS_SCHEMA} or {COMPATIBILITY_JOBS_SCHEMA}",
+        )
+    compatibility_mode = schema_version == COMPATIBILITY_JOBS_SCHEMA
+    if compatibility_mode and "source_mode" in root:
+        fail(
+            "invalid_jobs",
+            f"{COMPATIBILITY_JOBS_SCHEMA} does not support source_mode",
+        )
     target_size = parse_target_size(root.get("target_size"))
-    default_key = parse_key_color(root.get("key_color", "auto"), "key_color")
+    default_source_mode = (
+        "chroma_key"
+        if compatibility_mode
+        else parse_source_mode(root.get("source_mode", "native_alpha"), "source_mode")
+    )
+    if default_source_mode == "native_alpha" and "key_color" in root:
+        fail("invalid_jobs", "key_color is valid only for chroma_key source mode")
+    default_key = (
+        parse_key_color(root.get("key_color", "auto"), "key_color")
+        if default_source_mode == "chroma_key"
+        else "auto"
+    )
     frames = root.get("frames")
     if not isinstance(frames, list) or not 1 <= len(frames) <= MAX_JOBS:
         fail("invalid_jobs", f"frames must contain 1 to {MAX_JOBS} jobs")
@@ -199,6 +243,19 @@ def parse_jobs(path: Path) -> tuple[tuple[int, int], list[dict[str, Any]]]:
         if not isinstance(frame, dict):
             fail("invalid_jobs", f"frames[{index}] must be an object")
         reject_unknown_keys(frame, ALLOWED_FRAME_KEYS, f"frames[{index}]")
+        if compatibility_mode and "source_mode" in frame:
+            fail(
+                "invalid_jobs",
+                f"{COMPATIBILITY_JOBS_SCHEMA} does not support frame source_mode",
+            )
+        source_mode = (
+            "chroma_key"
+            if compatibility_mode
+            else parse_source_mode(
+                frame.get("source_mode", default_source_mode),
+                f"frames[{index}].source_mode",
+            )
+        )
         frame_id = frame.get("id")
         id_segments = frame_id.split("/") if isinstance(frame_id, str) else []
         if (
@@ -216,6 +273,11 @@ def parse_jobs(path: Path) -> tuple[tuple[int, int], list[dict[str, Any]]]:
         output = absolute_path(frame.get("output"), f"frames[{index}].output")
         if source.suffix.lower() not in {".png", ".webp", ".jpg", ".jpeg"}:
             fail("invalid_jobs", f"frames[{index}].source uses an unsupported image format")
+        if source_mode == "native_alpha" and source.suffix.lower() not in {".png", ".webp"}:
+            fail(
+                "invalid_jobs",
+                f"frames[{index}].source must be PNG or WebP in native_alpha mode",
+            )
         if master.suffix.lower() != ".png" or output.suffix.lower() != ".png":
             fail("invalid_jobs", "transparent masters and runtime frames must be PNG")
         if master == output or master == source or output == source:
@@ -227,7 +289,24 @@ def parse_jobs(path: Path) -> tuple[tuple[int, int], list[dict[str, Any]]]:
 
         mask_value = frame.get("foreground_mask")
         mask = absolute_path(mask_value, f"frames[{index}].foreground_mask") if mask_value is not None else None
-        key = parse_key_color(frame.get("key_color", default_key), f"frames[{index}].key_color")
+        if source_mode == "native_alpha":
+            if mask is not None:
+                fail(
+                    "invalid_jobs",
+                    "foreground_mask is valid only for chroma_key source mode",
+                )
+            if "key_color" in frame:
+                fail(
+                    "invalid_jobs",
+                    "frame key_color is valid only for chroma_key source mode",
+                )
+            key: str | tuple[int, int, int] | None = None
+        else:
+            inherited_key = default_key if default_source_mode == "chroma_key" else "auto"
+            key = parse_key_color(
+                frame.get("key_color", inherited_key),
+                f"frames[{index}].key_color",
+            )
         parsed.append(
             {
                 "id": frame_id,
@@ -236,10 +315,11 @@ def parse_jobs(path: Path) -> tuple[tuple[int, int], list[dict[str, Any]]]:
                 "master": master,
                 "output": output,
                 "foreground_mask": mask,
+                "source_mode": source_mode,
                 "key_color": key,
             }
         )
-    return target_size, parsed
+    return schema_version, target_size, parsed
 
 
 def channel_distance(color: tuple[int, int, int], key: tuple[int, int, int]) -> int:
@@ -511,6 +591,52 @@ def build_matte(
         "foreground_mask_used": sure_foreground is not None,
         "transparent_pixels": sum(pixel[3] == 0 for pixel in output),
         "translucent_pixels": sum(0 < pixel[3] < 255 for pixel in output),
+    }
+
+
+def normalize_native_alpha(source: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
+    pixels = image_values(source)
+    alpha_values = [pixel[3] for pixel in pixels]
+    visible_count = sum(value >= VISIBLE_ALPHA_THRESHOLD for value in alpha_values)
+    transparent_count = sum(value == 0 for value in alpha_values)
+    if visible_count == 0:
+        fail("invalid_native_alpha_source", "native Alpha source has no visible subject pixels")
+    if transparent_count == 0:
+        fail(
+            "invalid_native_alpha_source",
+            "native Alpha source has no fully transparent background pixels",
+        )
+
+    hidden_rgb_cleared = sum(
+        pixel[3] == 0 and any(pixel[:3]) for pixel in pixels
+    )
+    normalized_pixels = [
+        (0, 0, 0, 0) if pixel[3] == 0 else pixel for pixel in pixels
+    ]
+    normalized = Image.new("RGBA", source.size)
+    normalized.putdata(normalized_pixels)
+    normalized_alpha = image_values(normalized.getchannel("A"))
+    nontransparent_rgba_changed = sum(
+        before != after
+        for before, after in zip(pixels, normalized_pixels)
+        if before[3] > 0
+    )
+    if normalized_alpha != alpha_values or nontransparent_rgba_changed:
+        fail(
+            "native_alpha_changed",
+            "native Alpha normalization changed visible RGBA or the authored Alpha plane",
+        )
+    return normalized, {
+        "alpha_preserved": True,
+        "alpha_min": min(alpha_values),
+        "alpha_max": max(alpha_values),
+        "unique_alpha_values": len(set(alpha_values)),
+        "visible_pixels": visible_count,
+        "transparent_pixels": transparent_count,
+        "translucent_pixels": sum(0 < value < 255 for value in alpha_values),
+        "opaque_pixels": sum(value == 255 for value in alpha_values),
+        "transparent_rgb_cleared_pixels": hidden_rgb_cleared,
+        "nontransparent_rgba_changed_pixels": nontransparent_rgba_changed,
     }
 
 
@@ -814,57 +940,73 @@ def edge_fringe_report(
 
 def validate_transparent_frame(
     image: Image.Image,
-    key: tuple[int, int, int],
+    key: tuple[int, int, int] | None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     pixels = image_values(image)
     width, height = image.size
+    pixel_count = width * height
     alpha = image.getchannel("A")
+    alpha_values = image_values(alpha)
     boundary = alpha_edge_band(alpha, 3)
     visible_count = sum(pixel[3] >= VISIBLE_ALPHA_THRESHOLD for pixel in pixels)
     transparent_count = sum(pixel[3] == 0 for pixel in pixels)
+    translucent_count = sum(0 < pixel[3] < 255 for pixel in pixels)
+    opaque_count = sum(pixel[3] == 255 for pixel in pixels)
     border_visible = sum(
-        pixels[index][3] >= VISIBLE_ALPHA_THRESHOLD for index in border_indices(width, height, 1)
+        pixels[index][3] > 0 for index in border_indices(width, height, 1)
     )
     transparent_rgb = sum(pixel[3] == 0 and any(pixel[:3]) for pixel in pixels)
-    visible_key = sum(
-        pixel[3] >= VISIBLE_ALPHA_THRESHOLD and channel_distance(pixel[:3], key) <= 32
-        for pixel in pixels
-    )
-    edge_fringe_indices = [
-        index
-        for index, pixel in enumerate(pixels)
-        if (
-            boundary[index]
-            and pixel[3] >= VISIBLE_ALPHA_THRESHOLD
-            and (
-                channel_distance(pixel[:3], key) <= 64
-                or (
-                    key_dominance(pixel[:3], key) >= 48
-                    and chroma_similarity(pixel[:3], key) >= 0.97
+    if key is None:
+        visible_key = 0
+        edge_fringe = {
+            **edge_fringe_report([], pixels, image.size),
+            "disposition": "not_applicable",
+        }
+    else:
+        visible_key = sum(
+            pixel[3] >= VISIBLE_ALPHA_THRESHOLD
+            and channel_distance(pixel[:3], key) <= 32
+            for pixel in pixels
+        )
+        edge_fringe_indices = [
+            index
+            for index, pixel in enumerate(pixels)
+            if (
+                boundary[index]
+                and pixel[3] >= VISIBLE_ALPHA_THRESHOLD
+                and (
+                    channel_distance(pixel[:3], key) <= 64
+                    or (
+                        key_dominance(pixel[:3], key) >= 48
+                        and chroma_similarity(pixel[:3], key) >= 0.97
+                    )
                 )
             )
-        )
-    ]
-    edge_fringe = edge_fringe_report(edge_fringe_indices, pixels, image.size)
+        ]
+        edge_fringe = edge_fringe_report(edge_fringe_indices, pixels, image.size)
     holes = enclosed_transparent_components(image)
     errors: list[str] = []
     warnings: list[str] = []
     if visible_count == 0:
         errors.append("frame has no visible subject pixels")
+    elif visible_count / pixel_count < MIN_ALPHA_COVERAGE:
+        errors.append("frame has less than 1% visible coverage")
     if transparent_count == 0:
         errors.append("frame has no transparent background pixels")
+    elif transparent_count / pixel_count < MIN_ALPHA_COVERAGE:
+        errors.append("frame has less than 1% transparent coverage")
     if border_visible:
         errors.append("visible subject pixels touch the frame edge")
     if transparent_rgb:
         errors.append("fully transparent pixels contain non-zero RGB")
-    if visible_key:
+    if key is not None and visible_key:
         warnings.append(
             "visible pixels close to the chroma key are diagnostic only; "
             "inspect all five preview backgrounds for actual contamination"
         )
-    if edge_fringe["disposition"] == "hard_failure":
+    if key is not None and edge_fringe["disposition"] == "hard_failure":
         errors.append("visible silhouette-edge pixels retain chroma contamination")
-    elif edge_fringe["disposition"] == "review_warning":
+    elif key is not None and edge_fringe["disposition"] == "review_warning":
         warnings.append(
             "isolated low-alpha silhouette-edge chroma evidence is within the bounded "
             "review allowance; inspect all five preview backgrounds for actual contamination"
@@ -875,8 +1017,16 @@ def validate_transparent_frame(
         {
             "visible_pixels": visible_count,
             "transparent_pixels": transparent_count,
+            "translucent_pixels": translucent_count,
+            "opaque_pixels": opaque_count,
+            "visible_coverage": round(visible_count / pixel_count, 6),
+            "transparent_coverage": round(transparent_count / pixel_count, 6),
+            "alpha_min": min(alpha_values),
+            "alpha_max": max(alpha_values),
+            "unique_alpha_values": len(set(alpha_values)),
             "border_visible_pixels": border_visible,
             "transparent_rgb_residue_pixels": transparent_rgb,
+            "chroma_key_qa_applied": key is not None,
             "visible_key_pixels": visible_key,
             "edge_chroma_fringe_pixels": edge_fringe["pixels"],
             "edge_chroma_fringe": edge_fringe,
@@ -899,13 +1049,47 @@ def checkerboard(size: tuple[int, int]) -> Image.Image:
     return image
 
 
-def qa_preview(image: Image.Image, key: tuple[int, int, int]) -> Image.Image:
+def contrast_background_color(
+    image: Image.Image,
+    key: tuple[int, int, int] | None,
+) -> tuple[int, int, int]:
+    if key is not None:
+        return tuple(255 - value for value in key)
+    pixels = image_values(image)
+    weight = sum(pixel[3] for pixel in pixels)
+    average = (
+        tuple(
+            round(sum(pixel[channel] * pixel[3] for pixel in pixels) / weight)
+            for channel in range(3)
+        )
+        if weight
+        else (128, 128, 128)
+    )
+    candidates = (
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 176, 0),
+        (32, 96, 255),
+    )
+    return max(
+        candidates,
+        key=lambda candidate: sum(
+            (candidate[channel] - average[channel]) ** 2 for channel in range(3)
+        ),
+    )
+
+
+def qa_preview(
+    image: Image.Image,
+    key: tuple[int, int, int] | None,
+) -> Image.Image:
+    contrast = contrast_background_color(image, key)
     backgrounds = [
         checkerboard(image.size),
         Image.new("RGBA", image.size, (255, 255, 255, 255)),
         Image.new("RGBA", image.size, (128, 128, 128, 255)),
         Image.new("RGBA", image.size, (0, 0, 0, 255)),
-        Image.new("RGBA", image.size, tuple(255 - value for value in key) + (255,)),
+        Image.new("RGBA", image.size, contrast + (255,)),
     ]
     for background in backgrounds:
         background.alpha_composite(image)
@@ -1017,48 +1201,86 @@ def process_job(
             "source_capacity_missing",
             "source crop is smaller than the selected runtime target; generate or select a larger source crop because downscaling is allowed but upscaling is not",
         )
-    sure_foreground = load_foreground_mask(
-        job["foreground_mask"],
-        source_size=decoded_size,
-        crop_bounds=crop_bounds,
-        crop_size=source.size,
-    )
-    pixels = image_values(source)
-    if any(pixel[3] != 255 for pixel in pixels):
-        fail(
-            "invalid_chroma_source",
-            "source crop must be fully opaque flat-background artwork; do not request model-native transparency",
-        )
-    key, key_report = estimate_key(pixels, source.size, job["key_color"])
-    matte, matte_report = build_matte(
-        source,
-        key,
-        key_report["transparent_threshold"],
-        sure_foreground,
-    )
-    cleaned, cleanup_report = reconstruct_edge_rgb(matte, key, target_size)
-    if not cleanup_report["alpha_preserved"]:
-        fail("alpha_changed", "source-resolution RGB reconstruction changed Alpha")
-
+    source_mode = job["source_mode"]
     source_pixels = image_values(source)
-    cleaned_pixels = image_values(cleaned)
-    master_boundary = alpha_edge_band(cleaned.getchannel("A"), cleanup_report["edge_radius_source_px"])
-    interior_rgb_changes = sum(
-        source_pixel[:3] != cleaned_pixel[:3]
-        for index, (source_pixel, cleaned_pixel) in enumerate(zip(source_pixels, cleaned_pixels))
-        if cleaned_pixel[3] == 255 and not master_boundary[index]
-    )
+    key: tuple[int, int, int] | None
+    key_report: dict[str, Any] | None
+    matte_report: dict[str, Any] | None
+    native_alpha_report: dict[str, Any] | None
+    sure_foreground: list[bool] | None
+    if source_mode == "native_alpha":
+        key = None
+        key_report = None
+        matte_report = None
+        sure_foreground = None
+        cleaned, native_alpha_report = normalize_native_alpha(source)
+        cleanup_report = {
+            "applied": False,
+            "reason": "native_alpha_preserved",
+            "edge_radius_source_px": 0,
+            "alpha_preserved": True,
+            "reconstructed_translucent_pixels": 0,
+            "reconstructed_opaque_pixels": 0,
+        }
+        interior_rgb_changes = native_alpha_report[
+            "nontransparent_rgba_changed_pixels"
+        ]
+    else:
+        native_alpha_report = None
+        sure_foreground = load_foreground_mask(
+            job["foreground_mask"],
+            source_size=decoded_size,
+            crop_bounds=crop_bounds,
+            crop_size=source.size,
+        )
+        if any(pixel[3] != 255 for pixel in source_pixels):
+            fail(
+                "invalid_chroma_source",
+                "chroma_key source crop must be fully opaque flat-background artwork",
+            )
+        requested_key = job["key_color"]
+        if requested_key is None:
+            fail("invalid_jobs", "chroma_key source mode requires key_color")
+        key, key_report = estimate_key(source_pixels, source.size, requested_key)
+        matte, matte_report = build_matte(
+            source,
+            key,
+            key_report["transparent_threshold"],
+            sure_foreground,
+        )
+        cleaned, cleanup_report = reconstruct_edge_rgb(matte, key, target_size)
+        if not cleanup_report["alpha_preserved"]:
+            fail("alpha_changed", "source-resolution RGB reconstruction changed Alpha")
+
+        cleaned_pixels = image_values(cleaned)
+        master_boundary = alpha_edge_band(
+            cleaned.getchannel("A"),
+            cleanup_report["edge_radius_source_px"],
+        )
+        interior_rgb_changes = sum(
+            source_pixel[:3] != cleaned_pixel[:3]
+            for index, (source_pixel, cleaned_pixel) in enumerate(
+                zip(source_pixels, cleaned_pixels)
+            )
+            if cleaned_pixel[3] == 255 and not master_boundary[index]
+        )
     if interior_rgb_changes:
-        fail("interior_rgb_changed", "pipeline changed opaque RGB outside the alpha edge band")
+        fail(
+            "interior_rgb_changed",
+            "pipeline changed visible RGB outside the permitted normalization scope",
+        )
 
     runtime_before_reconstruction = resize_linear_premultiplied(cleaned, target_size)
-    runtime_before_reconstruction = apply_edge_fallback(
-        runtime_before_reconstruction,
-        edge_contract,
-        edge_feather,
+    if source_mode == "chroma_key":
+        runtime_before_reconstruction = apply_edge_fallback(
+            runtime_before_reconstruction,
+            edge_contract,
+            edge_feather,
+        )
+    runtime_repair_needed = source_mode == "chroma_key" and (
+        cleaned.size != target_size or bool(edge_contract or edge_feather)
     )
-    runtime_repair_needed = cleaned.size != target_size or bool(edge_contract or edge_feather)
-    if runtime_repair_needed:
+    if runtime_repair_needed and key is not None:
         runtime, runtime_cleanup_report = reconstruct_edge_rgb(
             runtime_before_reconstruction,
             key,
@@ -1088,7 +1310,11 @@ def process_job(
         runtime = runtime_before_reconstruction
         runtime_cleanup_report = {
             "applied": False,
-            "reason": "source_resolution_repair_already_matches_final_size",
+            "reason": (
+                "native_alpha_requires_no_chroma_reconstruction"
+                if source_mode == "native_alpha"
+                else "source_resolution_repair_already_matches_final_size"
+            ),
             "edge_radius_runtime_px": 0,
             "alpha_preserved": True,
             "reconstructed_translucent_pixels": 0,
@@ -1115,6 +1341,7 @@ def process_job(
         warnings.append(f"inward-only alpha feather fallback was applied at {edge_feather} final pixels")
     return {
         "id": job["id"],
+        "source_mode": source_mode,
         "ok": not errors,
         "errors": errors,
         "warnings": sorted(set(warnings)),
@@ -1129,6 +1356,7 @@ def process_job(
                 "height": crop_bounds[3] - crop_bounds[1],
             },
         },
+        "native_alpha": native_alpha_report,
         "foreground_mask": (
             {
                 "path": str(job["foreground_mask"]),
@@ -1172,7 +1400,7 @@ def process_job(
         "preview": {
             "path": str(preview_path),
             "sha256": sha256(preview_path),
-            "panels": ["checkerboard", "white", "gray", "black", "key_complement"],
+            "panels": ["checkerboard", "white", "gray", "black", "contrast_color"],
         },
     }
 
@@ -1181,7 +1409,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     jobs_path = absolute_path(args.jobs, "--jobs")
     report_path = absolute_path(args.report, "--report")
     preview_dir = absolute_path(args.preview_dir, "--preview-dir")
-    target_size, jobs = parse_jobs(jobs_path)
+    input_schema, target_size, jobs = parse_jobs(jobs_path)
+    source_modes = sorted({job["source_mode"] for job in jobs})
+    if (args.edge_contract or args.edge_feather) and "native_alpha" in source_modes:
+        fail(
+            "invalid_fallback",
+            "edge contraction and feathering are available only for chroma_key sources; regenerate a defective native Alpha source instead",
+        )
     preflight_destinations(jobs, report_path, preview_dir, args.replace)
     results: list[dict[str, Any]] = []
     for job in jobs:
@@ -1200,6 +1434,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             results.append(
                 {
                     "id": job["id"],
+                    "source_mode": job["source_mode"],
                     "ok": False,
                     "errors": [error.message],
                     "warnings": [],
@@ -1208,6 +1443,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
     report = {
         "schema_version": REPORT_SCHEMA,
+        "input_schema_version": input_schema,
         "ok": all(result["ok"] for result in results),
         "pipeline": PIPELINE_ID,
         "implementation_sha256": sha256(Path(__file__).resolve()),
@@ -1218,11 +1454,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "target_size": {"width": target_size[0], "height": target_size[1]},
         "target_tier": TARGET_TIERS[target_size],
         "configuration": {
-            "spatial_background": "border_connected_key_candidates",
-            "soft_matte": True,
-            "edge_rgb_scope": "alpha_boundary_with_chroma_evidence",
+            "source_modes": source_modes,
+            "native_alpha": "preserve_authored_alpha_and_visible_rgba_clear_hidden_transparent_rgb",
+            "spatial_background": "border_connected_key_candidates_for_chroma_key_only",
+            "soft_matte": "chroma_key_only",
+            "edge_rgb_scope": "alpha_boundary_with_chroma_evidence_for_chroma_key_only",
             "alpha_preserved_during_edge_rgb_reconstruction": True,
-            "runtime_edge_rgb_reconstruction": "after_final_resize_and_alpha_fallback",
+            "runtime_edge_rgb_reconstruction": "chroma_key_only_after_final_resize_and_alpha_fallback",
             "visible_key_pixels": "diagnostic_only_requires_preview_review",
             "minor_edge_fringe": "bounded_alpha_weighted_review_warning",
             "resize": "linear_light_premultiplied_lanczos_once_or_exact_copy",
@@ -1237,7 +1475,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--jobs", required=True, help="Absolute apc.transparent-frame-jobs.v1 JSON path")
+    parser.add_argument(
+        "--jobs",
+        required=True,
+        help="Absolute apc.transparent-frame-jobs.v2 (or compatible v1) JSON path",
+    )
     parser.add_argument("--report", required=True, help="Absolute output report path")
     parser.add_argument("--preview-dir", required=True, help="Absolute multi-background QA directory")
     parser.add_argument("--edge-contract", type=int, choices=(0, 1), default=0)

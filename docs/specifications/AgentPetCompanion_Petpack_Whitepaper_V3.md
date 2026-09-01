@@ -135,17 +135,22 @@ centered crop, safe-box, baseline, and global-scale geometry; prompted
 equal-size figures are guidance, not acceptance evidence. These workspace-only
 guides never enter the portable package.
 
-The shared Maker/Studio transparency pipeline retains that source-resolution
-transparent master and may perform one direct linear-light
+The shared Maker/Studio transparency pipeline accepts two explicit source
+modes. ChatGPT/Codex built-in `imagegen` and Codex-backed Studio default to
+genuine native-Alpha PNG source art for `low` and `standard`; the pipeline
+preserves its authored Alpha plane and every nontransparent RGBA pixel while
+clearing only hidden RGB beneath Alpha 0. A selected opaque-only provider uses
+the bounded flat-chroma compatibility mode instead. Both routes retain a
+source-resolution transparent master and may perform one direct linear-light
 premultiplied-Alpha downscale to the runtime tier for `low`, `standard`, or
-`high`. Upscaling, super-resolution, stretching, resizing before matting,
-independent per-pose fitting, cascaded or post-process resizing, or padding a
-smaller crop into the target canvas is invalid. Package support does not claim
-that every producer can create every tier. The App's Codex-backed Studio and
-the built-in ChatGPT/Codex image path are qualified only for `low` and
-`standard`. Another producer may author `high` only when its untouched decoded
-source proves sufficient pixels for every cell; splitting a state across
-multiple batches is not a substitute for missing source capacity.
+`high`. Upscaling, super-resolution, stretching, resizing before transparency
+normalization, independent per-pose fitting, cascaded or post-process resizing,
+padding a smaller crop into the target canvas, or silently replacing a failed
+native-Alpha action with chroma is invalid. Package support does not claim that
+every producer can create every tier. Studio and built-in `imagegen` remain
+unqualified for `high`. Another producer may author `high` only when its
+untouched decoded source proves sufficient pixels for every cell; splitting a
+state across multiple batches is not a substitute for missing source capacity.
 [Validation Profiles](../development/validation.md) defines which validation
 layer covers this boundary.
 
@@ -286,14 +291,17 @@ must not be used to infer runtime timing.
 - Production begins from one canonical identity lock: silhouette, face
   landmarks, anatomy and proportions, outfit and accessories, palette,
   rendering treatment, lighting, scale, baseline, crop, and camera.
-- Maker and Studio generate new rows as fully opaque art on one uniform
-  contrasting background, not model-native transparent output. Their shared
-  script owns the conservative border-connected soft matte, Alpha-boundary-only
-  RGB reconstruction, the sole optional downscale from a source crop at least
-  as large as the target, source-resolution transparent-master retention, and
-  checkerboard/white/gray/black/complementary-background QA. Agents cannot tune
-  thresholds or substitute per-run color/edge filters. An unchanged frame in
-  an edit remains byte-identical.
+- Maker and Studio use ChatGPT/Codex built-in `imagegen` with genuine native-
+  Alpha PNG output by default for supported tiers. Their shared version 2
+  script verifies decoded Alpha, preserves the complete Alpha plane and every
+  nontransparent RGBA pixel, clears only hidden RGB beneath Alpha 0, retains
+  the source-resolution transparent master, and performs the sole optional
+  downscale from a source crop at least as large as the target. A selected
+  opaque-only source uses the same script's conservative border-connected soft
+  matte and Alpha-boundary-only RGB reconstruction. Both modes emit
+  checkerboard/white/gray/black/high-contrast-background QA. Agents cannot tune
+  thresholds, rematte native Alpha, or substitute per-run color/edge filters.
+  An unchanged frame in an edit remains byte-identical.
 - Each action communicates one readable intent, with deliberate spacing and
   non-uniform holds. Whole-character travel, rotation, recoil, squash/stretch,
   or scale change is valid when identity, continuity, crop, props, timing, and
@@ -460,7 +468,8 @@ returns `capability_missing` instead of fabricating a package.
 Creation defaults to `standard` 384×416 and the action table in this
 specification; `low` 192×208 is the smaller alternative and `high` 576×624 is
 available only with a source-capable image source. ChatGPT/Codex built-in
-`imagegen` must not attempt `high`. The App's
+`imagegen` is the default `low`/`standard` image path, requests genuine
+transparent PNG source art, and must not attempt `high`. The App's
 `GenerationForm` contains only description, style, quality, and bounded
 reference-image paths. Users do not configure timing in
 the form; the visual producer authors the complete timing contract as part of
