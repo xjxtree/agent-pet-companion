@@ -1,6 +1,6 @@
 ---
 name: agent-pet-maker
-version: 0.5.8
+version: 0.5.9
 description: Create or revise portable Agent Pet Companion .petpack V3 pets at low, standard, or high resolution from text and optional reference images. Use for new pets, exported-package revisions, action or timing edits, provider-aware image production, motion QA, packaging, or an explicitly requested install.
 ---
 
@@ -76,7 +76,12 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
    reference in that order; `high` production may not rely on text-only equal-
    scale control. Verify the returned frame count, order, identity, anatomy,
    action, spacing, subject scale, crop capacity, and flat background before
-   accepting it.
+   accepting it. Apply the shared oversized-subject decision before rejecting a
+   merely larger-than-runtime figure: if the complete subject and blank margin
+   fit one stable larger 12:13 crop, preserve that crop for the sole whole-frame
+   downscale. If it overflows the recorded safe geometry, correct the generation
+   inputs and regenerate; never shrink, fit, recenter, clip, or pad a returned
+   subject into compliance.
 5. Crop stable equal-size 12:13 source windows without resampling. Run every
    new or regenerated crop through the shared transparency script; package only
    its exact-tier runtime PNGs. Accept a state only when the report and every

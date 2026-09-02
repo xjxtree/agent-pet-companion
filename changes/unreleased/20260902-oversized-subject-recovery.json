@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Changed",
+  "scope": "pet-production",
+  "summary_en": "Pet Maker and Studio now distinguish a safely downscalable large source crop from a truly oversized subject, and recover overflowing generations with shared geometry, normalized provider references, and verified multi-row Dreamina layouts instead of post-fitting returned figures.",
+  "summary_zh": "Pet Maker 与 Studio 现在会区分可安全整幅缩小的大尺寸源裁切和真正越界的主体；对于越界生图，改用共享几何、生成端参考图等比缩小及已验证的 Dreamina 多行布局恢复，不再对返回人物事后适配。"
+}

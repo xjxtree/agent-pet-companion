@@ -174,6 +174,7 @@ class ContractSynchronizationTests(unittest.TestCase):
         visual = (
             MAKER / "references" / "visual-production-and-native-resolution.md"
         ).read_text(encoding="utf-8")
+        maker = (MAKER / "SKILL.md").read_text(encoding="utf-8")
         studio = (STUDIO / "SKILL.md").read_text(encoding="utf-8")
         for required in (
             "ChatGPT/Codex built-in `imagegen`",
@@ -212,6 +213,50 @@ class ContractSynchronizationTests(unittest.TestCase):
                 self.assertEqual(crop_w * 13, crop_h * 12)
                 self.assertGreaterEqual(crop_w, 576)
                 self.assertGreaterEqual(crop_h, 624)
+
+        for name, entrypoint in (("maker", maker), ("studio", studio)):
+            with self.subTest(entrypoint=name):
+                normalized = " ".join(entrypoint.split())
+                self.assertIn("larger 12:13 crop", normalized)
+                self.assertIn("overflow", normalized)
+
+        normalized_visual = " ".join(visual.split())
+        for required in (
+            "source-crop capacity and subject occupancy as separate facts",
+            "sole whole-canvas downscale",
+            "provider-input-only normalized copy",
+            "not source-capacity evidence",
+        ):
+            self.assertIn(required, normalized_visual)
+
+        grid_rows = re.findall(
+            r"\| (\d+) \| (\d+)×(\d+) \| (\d+)×(\d+) \| "
+            r"(\d+)×(\d+) \| (\d+)×(\d+) \|",
+            guide,
+        )
+        self.assertEqual(len(grid_rows), 3)
+        for raw_row in grid_rows:
+            (
+                frame_count,
+                columns,
+                rows,
+                canvas_w,
+                canvas_h,
+                slot_w,
+                slot_h,
+                crop_w,
+                crop_h,
+            ) = map(int, raw_row)
+            with self.subTest(recovery_grid=f"{columns}x{rows}"):
+                self.assertEqual(columns * rows, frame_count)
+                self.assertEqual(canvas_w, columns * slot_w)
+                self.assertEqual(canvas_h, rows * slot_h)
+                self.assertLessEqual(crop_w, slot_w)
+                self.assertLessEqual(crop_h, slot_h)
+                self.assertEqual(crop_w * 13, crop_h * 12)
+                self.assertGreaterEqual(crop_w, 576)
+                self.assertGreaterEqual(crop_h, 624)
+                self.assertLessEqual(canvas_w * canvas_h, 16_777_216)
 
     def test_maker_scripts_are_executable_and_parse_as_python(self) -> None:
         for path in sorted((MAKER / "scripts").glob("*.py")):

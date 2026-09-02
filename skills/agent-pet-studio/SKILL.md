@@ -1,6 +1,6 @@
 ---
 name: agent-pet-studio
-version: 0.5.8
+version: 0.5.9
 description: Generate or revise low- or standard-resolution Agent Pet Companion .petpack V3 assets from an in-app Studio job, using real image production when external full source is required and a portable Maker handoff for high resolution. Use only inside Agent Pet Companion Studio generation jobs.
 ---
 
@@ -13,11 +13,10 @@ gallery data, sharing metadata, or Agent execution traces.
 
 Always read the sibling Maker contracts for
 [V3 package and timing](../agent-pet-maker/references/petpack-v3.md) and
-[security](../agent-pet-maker/references/security.md). For external full-source
-work, also read the
-[create/modify workflow](../agent-pet-maker/references/create-modify.md),
-[visual-production contract](../agent-pet-maker/references/visual-production-and-native-resolution.md),
-and
+[security](../agent-pet-maker/references/security.md), plus the shared
+[visual-production contract](../agent-pet-maker/references/visual-production-and-native-resolution.md).
+For external full-source work, also read the
+[create/modify workflow](../agent-pet-maker/references/create-modify.md) and
 [transparent-frame contract](../agent-pet-maker/references/transparent-frame-production.md).
 Read the separate
 [Dreamina high guide](../agent-pet-maker/references/dreamina-high-production.md)
@@ -75,19 +74,21 @@ All modes remain limited to `low` and `standard`.
   defaults onto an existing valid V3 package. A requested timing edit requires
   a newly authored complete frame sequence for the affected state.
 - In brief modes, return name, visual brief, palette, `timing_changed`, all nine
-  state motion entries with complete V3 timing, render notes, and
-  `petpack_source`. Render notes must require a deterministic pose guide and a
-  separate deterministic size-reference image with shared slot/crop geometry
-  for every multi-frame action, plus action-intent review of Motion QA's body-
-  anchor and baseline path and the registration-only `motion-align` recovery
-  rule. Set `timing_changed` only for an explicit timing edit.
+  complete V3 state motion entries, render notes, and `petpack_source`. Render notes
+  require a deterministic pose guide, a separate deterministic size-reference
+  image, shared slot/crop geometry, the oversized-subject decision, Motion QA
+  path review, and registration-only `motion-align`. Set `timing_changed` only
+  for an explicit timing edit.
 - In external full-source mode, lock one canonical identity and create actions
   serially. Generate each multi-frame action from the character base plus a
   deterministic pose guide and separate deterministic size-reference image;
   all three references share one recorded slot, crop, baseline, and
   `global_scale` geometry, and text-only equal-scale control is insufficient.
   Generate fully opaque flat-background source art; inspect actual decoded
-  dimensions, subject scale, and stable equal-size 12:13 crops; use
+  dimensions, subject scale, and stable equal-size 12:13 crops. A complete
+  subject plus margin may use a larger 12:13 crop and the sole whole-crop
+  downscale. Regenerate an overflow from corrected geometry or a provider-input-
+  only proportionally reduced reference; never fit it after return. Use
   `../agent-pet-maker/scripts/prepare_transparent_frames.py` for every new or
   regenerated frame. Its closed runtime-size RGB repair and bounded isolated
   low-Alpha fringe warning are authoritative. On a hard failure, rerun only the
