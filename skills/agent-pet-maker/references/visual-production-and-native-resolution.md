@@ -7,8 +7,9 @@
 3. Production base and action batches
 4. Deterministic pose and size guides
 5. Reference and prompt contract
-6. Failure routing
-7. Runtime-size acceptance
+6. Oversized-subject decision and recovery
+7. Failure routing
+8. Runtime-size acceptance
 
 ## Source-capacity gate
 
@@ -64,9 +65,9 @@ props. Use this production base as reference image 1 for every later
 image-to-image action.
 
 Generate one action per call and normally keep all 4–8 ordered poses in one
-batch. Use one action card that states the intent, exact frame count, left-to-
-right beat order, playback outcome, safe margins, and flat-background rules.
-Immediately inspect the result before another call.
+batch. Use one action card that states the intent, exact frame count, the
+geometry sidecar's reading order, playback outcome, safe margins, and flat-
+background rules. Immediately inspect the result before another call.
 
 Every multi-frame action uses two script-generated structural references: a
 frameless pose guide as reference image 2 and a separate frameless size-
@@ -91,12 +92,25 @@ Create both guide images with one deterministic script, never an image model.
 The script must:
 
 1. Create a pure `#FF00FF` canvas at the target action-sheet dimensions.
-2. Divide it into invisible equal-width slots:
+2. Divide it into invisible equal-size slots. A one-row sheet uses:
 
    ```text
    slot_width = canvas_width / frame_count
    slot_center_x = (frame_index + 0.5) * slot_width
    ```
+
+   A multi-row sheet uses:
+
+   ```text
+   slot_width = canvas_width / columns
+   slot_height = canvas_height / rows
+   slot_center_x = (column + 0.5) * slot_width
+   slot_center_y = (row + 0.5) * slot_height
+   frame_index = row * columns + column
+   ```
+
+   Read multi-row poses left to right, then top to bottom. Do not leave an
+   unused slot that the provider could fill with an extra figure.
 
 3. Compute one largest centered 12:13 crop per slot, then one safe subject box
    inset by at least 10% on every crop edge. Record the canvas, slot centers,
@@ -148,7 +162,7 @@ and clothing design in every pose.
 
 Every action prompt must also require:
 
-- the exact frame count and left-to-right order;
+- the exact frame count and the sidecar's one-row or row-major order;
 - one complete same-scale character in each invisible slot;
 - the same identity, face, outfit, proportions, materials, and camera in every
   pose;
@@ -164,6 +178,45 @@ Every action prompt must also require:
 Choose the output chroma background by the transparency contract. The guide's
 magenta canvas is structural input, not an instruction to copy its color.
 
+## Oversized-subject decision and recovery
+
+Treat source-crop capacity and subject occupancy as separate facts. Measure the
+untouched decoded output before transparency or any resize, including hair,
+ears or earrings, fingers, garment edges, props or effects, and feet or heels.
+
+1. If every complete subject plus exterior blank margin fits the recorded
+   stable equal-size 12:13 crop, and that crop is at least the runtime target,
+   accept the source even when its figure is much larger than the runtime pet.
+   Crop without resampling and let the shared transparency script perform the
+   sole whole-canvas downscale. This preserves the subject-to-canvas ratio and
+   is the normal supported path, not a scale repair.
+2. If any complete subject crosses the safe subject box, touches the crop, or
+   is already clipped, reject the output. Do not choose a tighter or shifted
+   per-frame crop, shrink or recenter the returned figure, expand the cell with
+   padding, or treat a post-fit frame as source evidence.
+3. Correct the generation inputs as one action-wide geometry change. Prefer a
+   sheet orientation or grid with larger equal slots when the provider's real
+   canvas limits allow it, and/or reduce `global_scale` once. Regenerate the
+   pose guide and size-reference image together from the revised sidecar, keep
+   the same authored frame count and order, and make one corrected call.
+4. When the canonical identity reference itself fills most of its image and
+   keeps biasing the provider toward an oversized subject, retain that original
+   as the identity acceptance authority and create a provider-input-only
+   normalized copy. Crop one rectangle containing every visible defining
+   feature and garment edge, proportionally downscale the entire rectangle
+   once, and place it on a larger flat input canvas aligned to the recorded
+   safe box. Never enlarge, warp, mask, restyle, or independently alter body
+   parts. Use the normalized copy only for the corrected generation call; it
+   is not source-capacity evidence, generated source art, or a package frame.
+5. Reinspect the corrected untouched output against the sidecar measurements.
+   If the same occupancy defect remains, change the sheet topology, provider,
+   or action design instead of searching smaller scales or post-processing the
+   returned subjects.
+
+The permission to proportionally downscale a provider input reference does not
+change runtime normalization: output frames still permit only an exact copy or
+one whole-crop linear-light premultiplied-Alpha downscale in the shared script.
+
 ## Failure routing
 
 - Corner marks: move subjects away from all four corners and preserve exterior
@@ -172,10 +225,8 @@ magenta canvas is structural input, not an instruction to copy its color.
   solid background`.
 - Copied guide figures: require complete replacement and forbid retained guide
   pixels.
-- Scale drift or oversized figures: do not fit cells independently. Regenerate
-  both structural guides from one geometry record, reduce `global_scale` once
-  for the whole action when needed, and lock camera distance, head size,
-  shoulder width, full-body pixel height, and safe crop occupancy.
+- Scale drift or oversized figures: follow the oversized-subject decision and
+  recovery above; never fit cells independently.
 - Pose/size disagreement: repair the shared sidecar and regenerate both guides;
   never resize or reposition one reference independently.
 - Whole-subject registration drift: compare Motion QA's per-frame body-anchor

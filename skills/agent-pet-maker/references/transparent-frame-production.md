@@ -144,7 +144,9 @@ Treat a non-zero exit or any `"ok": false` frame as unusable.
 - Keep the recorded equal-size shared action crop. Change it only when canvas
   contact or the deterministic geometry record proves the crop itself wrong;
   never search adjacent per-frame crops. If the subject overflows correct
-  geometry, regenerate it at the proper scale.
+  geometry, follow the shared
+  [oversized-subject recovery](visual-production-and-native-resolution.md#oversized-subject-decision-and-recovery)
+  and regenerate it instead of fitting the returned figure.
 - After that bounded local path, regenerate on a flatter contrasting opaque
   background. If the same source defect occurs twice, change the prompt, key
   choice, or action design instead of extending the parameter search.
