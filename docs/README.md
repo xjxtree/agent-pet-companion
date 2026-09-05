@@ -23,10 +23,11 @@ When prose disagrees with code, investigate the implementation and update the si
 | [Validation profiles](development/validation.md) | What each validation layer proves / 各验证层能够证明什么 |
 | [Parallel development](development/parallel-development.md) | Codex project defaults, direct/train PR lanes, Agent ownership, auto-merge, and protected delivery / Codex 项目默认设置、direct/train PR 通道、Agent 所有权、自动合并与受保护交付 |
 | [macOS release](release/macos-release.md) | Official GitHub Release procedure and installation contract / 正式 GitHub Release 流程与安装合同 |
-| [CHANGELOG](../CHANGELOG.md) | Versioned user-visible changes / 按版本记录的用户可见变化 |
+| [Unreleased fragments](../changes/unreleased/README.md) | Development change records before release preparation / 发布准备前的开发变更记录 |
+| [CHANGELOG](../CHANGELOG.md) | Versioned release entries / 按版本整理的发布记录 |
 
 ## Maintenance / 维护
 
 - Keep one durable document per topic; link to code or schemas instead of copying them. / 每个主题只保留一份长期文档，优先链接源码或 schema。
 - Describe current behavior and invariants only. Plans, audits, progress logs, screenshots, and command output belong in issues, commits, PRs, CI, or Release notes. / 只描述当前行为与不变量；计划、审计、进度、截图和命令输出进入 issue、commit、PR、CI 或 Release notes。
-- Put user-visible changes in `[Unreleased]`; do not commit diagnostics, user data, credentials, build output, or temporary assets as documentation. / 用户可见变化写入 `[Unreleased]`；不要把诊断、用户数据、凭据、构建产物或临时素材作为文档提交。
+- Record user-visible development changes as [unreleased fragments](../changes/unreleased/README.md); only release preparation updates root `CHANGELOG.md`. Do not commit diagnostics, user data, credentials, build output, or temporary assets as documentation. / 用户可见的开发变更写入未发布片段，仅发布准备更新根 `CHANGELOG.md`；不要把诊断、用户数据、凭据、构建产物或临时素材作为文档提交。

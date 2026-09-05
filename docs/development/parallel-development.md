@@ -138,7 +138,11 @@ Every development lane adds one globally unique `changes/unreleased/*.json` frag
   --release-preparation false
 
 # Release-preparation branch only, after the fragment freeze:
-./script/changelog_fragments.py consume --apply
+./script/changelog_fragments.py consume \
+  --release-preparation \
+  --version X.Y.Z \
+  --date YYYY-MM-DD \
+  --apply
 ./script/validate_pre_push.sh
 ```
 

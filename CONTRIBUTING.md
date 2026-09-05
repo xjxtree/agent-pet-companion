@@ -13,14 +13,10 @@ Codex repository work uses the versioned [project configuration](.codex/config.t
 
 ## Workflow / 开发流程
 
-1. Read [AGENTS.md](AGENTS.md), then inspect the implementation, schemas, manifests, tests, and the owning document listed in [docs/README.md](docs/README.md). / 先阅读 `AGENTS.md`，再检查相关实现、schema、manifest、测试和负责该主题的文档。
-2. Keep local `main` read-only. The Agent chooses a direct `gd-ops/task/*` or `gd-ops/fix/*` PR to `main` for hotfix/small isolated work, or joins the main Agent's shared `gd-ops/train/*` for parallel/cross-component work. / 本地 `main` 只读；热修复或小型独立任务直接 PR 至 `main`，并行或跨组件任务加入主 Agent 的共享 train。
-3. Select one typed domain and claim from `development/domains.json`, register it with `development_flow.py branch-claim`, and obtain explicit approval before touching Amber or Red shared paths. The conflict preflight rejects overlapping claims before implementation. / 从领域清单选择一个 domain/claim 并登记；修改 Amber/Red 共享路径前必须获得显式批准，冲突预检会在实现前拒绝重叠声明。
-4. Give each Agent/session an independent branch and worktree, preserve unrelated changes, and hand sub-Agent work to the train only through task PRs. / 每个 Agent/会话使用独立分支与 worktree，保留无关改动，并仅通过任务 PR 将子 Agent 工作交给 train。
-5. Validate changed behavior with the smallest useful existing checks, adding regression coverage when it protects a real behavior or failure boundary. For documentation or model-default edits, validate the affected contracts without adding tests that repeat configuration values. Update the owning document, inspect the domain-focused plan with `validate_local_tests.sh --plan-only`, and run the relevant checks without repeating successful work unnecessarily. / 优先使用最小有效的现有检查验证行为变化，仅在保护实际行为或故障边界时补充回归测试。文档或模型默认值修改应验证相关契约，无需新增复述配置值的测试。同步对应文档，查看领域聚焦计划并执行相关检查，避免无必要地重复已通过的工作。
-6. Every direct, task, and train development PR adds a globally unique `changes/unreleased/*.json` fragment. Only an explicit release-preparation branch freezes and consumes fragments into root `CHANGELOG.md`. / 所有开发 PR 都写入全局唯一变更片段；只有显式 release-preparation 分支可冻结并汇总到根变更日志。
-
-The complete branch, worktree, ownership, auto-merge, and coordinator commands are defined in [Parallel development](docs/development/parallel-development.md). / 完整分支、worktree、所有权、自动合并与协调命令见并行开发文档。
+1. Read [AGENTS.md](AGENTS.md), then inspect the touched implementation, schemas, manifests, tests, and the relevant owning document in [docs/README.md](docs/README.md). / 先读 Agent 指令，再核对受影响的实现、类型契约、测试与对应文档。
+2. Before editing, follow [Parallel development](docs/development/parallel-development.md) to choose the direct/train lane, create an independent branch/worktree, and register the domain claim and any shared-path authorization. Keep local `main` read-only and preserve unrelated work. / 修改前按开发流程选择通道、创建独立分支与 worktree、登记领域及共享路径授权；本地 `main` 只读，保留无关工作。
+3. Validate changed behavior with the smallest useful existing checks. Add regression coverage when it protects a real behavior or failure boundary; documentation and model-default edits need contract validation rather than tests that repeat configuration values. Complete the required gates without unnecessarily repeating successful work. / 优先使用最小有效的现有检查；仅为实际行为或故障边界补充回归测试，文档和模型默认值修改不添加复述配置值的测试；完成必需门禁，避免无必要重复。
+4. Add the [unreleased change fragment](changes/unreleased/README.md), then complete the development workflow's commit, PR, and post-merge audit checklists. / 添加未发布变更片段，再完成开发流程中的提交、PR 与合并后审计清单。
 
 ## Validation / 验证
 
@@ -39,6 +35,6 @@ Computer Use is recommended for live macOS UI work when available and useful, bu
 
 Include: what changed, tests run, skipped environment gates, and any migration, privacy, performance, or accessibility impact. Add comparable before/after captures for visible UI changes. / 请说明改动、已运行测试、跳过的环境门禁，以及迁移、隐私、性能或无障碍影响；可见 UI 改动附同条件前后对比。
 
-Ready PRs from repository-owned `gd-ops/*` branches enroll in squash auto-merge only after the base branch exposes active PR and `Required CI` rules. Every ready PR to `main` runs the complete gate; train task PRs run scoped CI, and the exact merged `main` commit produces the Release source proof. / 仓库内 `gd-ops/*` 的 ready PR 仅在目标分支已启用 PR 与 `Required CI` 规则后进入 squash 自动合并。所有面向 `main` 的 ready PR 均运行完整门禁；train 任务 PR 运行范围化 CI，精确的已合并 `main` commit 生成 Release 源码证明。
+[Parallel development](docs/development/parallel-development.md#pr-lifecycle-and-ci--pr-生命周期与-ci) owns ready/draft behavior, required CI, squash auto-merge eligibility, control-plane exclusions, and post-merge delivery. / PR 的 ready/draft 状态、必需 CI、squash 自动合并条件、控制面例外与合并后交付以开发流程为准。
 
 Do not commit build caches or output, `.env` files, credentials, generated jobs, exported diagnostics, `.petpack` files, or temporary pet assets. Plans, progress logs, audits, and command output belong in issues, commits, PRs, CI, or Release notes rather than durable documentation. / 不要提交构建缓存或产物、`.env`、凭据、生成任务、导出诊断、`.petpack` 或临时宠物素材。计划、进度、审计和命令输出不进入长期文档。

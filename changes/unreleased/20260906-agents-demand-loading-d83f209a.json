@@ -2,6 +2,6 @@
   "schema_version": "apc.changelog-fragment.v1",
   "kind": "Changed",
   "scope": "development",
-  "summary_en": "Condense project Agent instructions into essential boundaries and task-specific documentation links while preserving product and release contracts.",
-  "summary_zh": "精简项目 Agent 指令，保留关键边界并按任务链接文档，同时保全产品与发布契约。"
+  "summary_en": "Condense project Agent guidance into task-based references, preserve product and release boundaries, and correct stale contributor, changelog, and timing documentation.",
+  "summary_zh": "将项目 Agent 指令精简为按任务读取入口，保留产品与发布边界，并修正贡献、变更日志及动画时长文档中的旧说明。"
 }
