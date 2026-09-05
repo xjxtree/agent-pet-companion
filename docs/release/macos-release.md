@@ -163,6 +163,8 @@ In order the workflow:
 
 Native compatibility validation on both architectures and packaged macOS 26 validation are hard dependencies; cross-building or static symbol inspection is not a substitute for runtime acceptance. Existing Releases are never overwritten. / 双架构原生兼容验收与 macOS 26 打包产物验收都是硬门禁；交叉构建或静态符号检查不能替代运行时验收，已有 Release 不会被覆盖。
 
+Release bundles include the validated `星雾团子`, `Bytebud 字节芽`, and `桃蕾` petpacks. Seeding uses the stable manifest-ID and bundled-authority rules in [Data model](../architecture/data-model.md#pet-identity-and-revisions). / 发布包包含上述三只已验证内置宠物；初始化遵循数据模型中的稳定 manifest ID 与内置来源权限规则。
+
 ## User installation contract / 用户安装合同
 
 The App, README, and Release notes use the same replacement flow. README may present it as numbered setup steps; each GitHub Release instead leads with the exact version's categorized bilingual `CHANGELOG.md` summary and then gives this flow as a short installation note. / App、README 与 Release notes 使用同一套替换流程；README 可以按编号步骤说明，而每个 GitHub Release 必须先展示从该版本 `CHANGELOG.md` 精确生成的分类双语变更摘要，再用简短安装说明呈现以下流程：

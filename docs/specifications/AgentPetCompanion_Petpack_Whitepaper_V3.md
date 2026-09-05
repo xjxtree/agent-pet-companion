@@ -255,9 +255,10 @@ the declared representative left/right pose only while dragging.
 The following common production targets are warnings, not package validity
 limits: 4–8 authored frames, at most about 1,500 ms for a non-periodic action,
 and an average effective rate of 4–12 frames per second. A periodic idle may
-deliberately use a longer calm authored hold, including the 2,000 ms creation
-default, before its separate cooldown. A valid action outside those ranges
-remains importable when its structural contract is sound.
+deliberately use a longer calm authored hold, up to the 2,000 ms per-frame
+limit, before its separate cooldown. The current creation defaults are in §4.
+A valid action outside those ranges remains importable when its structural
+contract is sound.
 
 `animated_preview.webp` is a non-authoritative display asset. Its codec timing
 must not be used to infer runtime timing.

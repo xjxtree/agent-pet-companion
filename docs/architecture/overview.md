@@ -38,8 +38,8 @@ The App composition root retains cross-feature orchestration in `AppStore`, whil
 
 ## Product boundaries
 
-- The desktop pet and session bubble are the daily surface. Pet Library, AI Pet Maker, Pet Configuration, Agent Connections, and Service & Diagnostics are the management surface.
-- First run is a resumable three-scene root presentation. Pet choice and Agent setup reuse normal product operations; the demo remains View-local and never creates Agent events or diagnostics.
+- The desktop pet and session bubble are the daily surface. Main navigation has exactly five entries in this order: Pet Library, AI Pet Maker, Pet Configuration, Agent Connections, and Service & Diagnostics. AI Pet Maker owns only new/edit briefs and their creation sessions; library and diagnostics remain separate pages.
+- First run is a resumable three-scene root presentation, never a sixth navigation entry. PetCore settings persist only versioned scene progress. Pet choice and Agent setup reuse normal product operations; the demo remains View-local and never creates Agent events or diagnostics.
 - Connections and bubbles use `Agent → session`, never project directories as user-facing identity.
 - A session title and latest user message remain separate bounded context. PetCore selects exactly one retained bubble-body message from the session's Agent replies and explicit thinking/plan text, ordered by persisted event sequence; user, tool, and lifecycle activity update their own context or the separate status indicator without entering or replacing that message. Grouped and flat Swift presentations consume the same selected body, render it in at most two lines, and do not reconstruct host payloads. Navigation notices keep their existing priority over ordinary body copy.
 - Bubbles default to one cross-Agent session-card list; users may opt into grouping sessions per Agent. The flat list keeps stable slots while a turn alternates between thinking, planning, and tools; only a new activation or attention-state transition may move a card.

@@ -1,91 +1,38 @@
 # Agent Instructions
 
-This repository is the workspace for Agent Pet Companion, a native macOS desktop pet app that combines an AI pet studio, a local pet library, a desktop overlay, and multi-agent event responses.
+Agent Pet Companion is a native macOS desktop pet app with an AI pet studio, local pet library, desktop overlay, and Agent session responses.
 
-## Sources Of Truth
+## Sources And Scope
 
-Use sources in this order when changing behavior or architecture:
+Use the current user request, then the touched implementation/typed contracts/tests, then the owning document in [docs/README.md](docs/README.md), then the public README. Investigate prose/code disagreements and update the owning document. Keep durable current-state contracts in the repository; task plans, audits, progress logs, and command evidence belong in PRs, CI, issues, or release notes.
 
-1. The current user request.
-2. The implementation, typed schemas, runtime manifests, and tests in the touched area.
-3. Durable current-state implementation documentation indexed by `docs/README.md`, including architecture, data, integration, validation, format, and release contracts when relevant.
-4. `README.md` / `README.zh-CN.md` for the supported public product surface.
+Keep the existing V1 scope: no public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or full mission-control platform unless the user changes scope. DeepSeek Harness is supported.
 
-The repository keeps durable current-state documentation, not completed design proposals, task plans, progress ledgers, dated audits, or implementation diaries. Fresh command output, CI artifacts, commits, issues, and release notes are the evidence for a particular task, commit, or build. If current-state prose disagrees with code, schemas, or tests, investigate the implementation and update the owning durable document instead of recording the discrepancy as status.
+## Required Boundaries
 
-The V1 scope is intentionally narrow. Do not add public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or a full agent mission-control platform unless the user explicitly changes scope. DeepSeek Harness (dsh) was explicitly authorized and included in scope by the user on 2026-08-18.
+- Keep local `main` read-only. Before editing, follow the [development workflow](docs/development/parallel-development.md): use an independent `gd-ops/task/*` or `gd-ops/fix/*` branch/worktree, register ownership, and use one writer per path. Choose a direct PR for small isolated work or the shared train for parallel/cross-component work. Sub-Agents hand off through PRs.
+- Complete the workflow's explicit staging, cached-diff audit, clean commit, push/PR verification, and post-merge audit. Remove only owned clean worktrees/branches with proven merged PRs and absent remote refs; fast-forward `main` only in its dedicated clean worktree.
+- Record user-visible changes once as unique typed fragments in `changes/unreleased/`. Only an explicit release-preparation branch consumes them into root `CHANGELOG.md`.
+- PetCore owns normal online state. Keep App/PetCore/CLI runtime identities synchronized; use bounded typed validation for external data and ID-based immutable pet revisions.
+- Do not read Agent auth, token, cookie, API-key, or secret files. Integrations consume only explicit local event channels and project capability tokens. Never commit credentials, `.env`, generated builds, DerivedData, or temporary pet assets.
+- Keep public documentation and product onboarding bilingual. Use existing focused checks and add the smallest useful regression coverage for changed behavior; complete the required local and CI gates.
 
-## Codex And Task Execution
+## Read For The Task
 
-- [Project Codex configuration](.codex/config.toml) selects GPT-6 Astra for repository work. Preserve an explicit user model choice and the user's compatible reasoning effort. The [development workflow](docs/development/parallel-development.md) explains configuration scope; Pet Studio's runtime model is owned separately by PetCore.
-- Carry an authorized change through implementation, relevant validation, and the repository's PR handoff. Resolve routine details from the implementation and accepted scope. Treat later corrections and status questions as updates to the same task unless the user cancels or replaces it.
-- Reuse authorization already given for the task. Prepare the concrete change before requesting any still-required decision. Ask only when missing information changes the requested outcome or an applicable boundary prevents progress; continue independent work while waiting. Keep the protected-branch, shared-path ownership, credential, pet-production, and release requirements below in force.
-- The current user's instructions take precedence over repository and Skill guidance within system and host constraints. If a file causes a pause or scope change, identify its path and exact instruction, explain the unresolved conflict, and ask one focused question. Do not turn a recommendation into an additional approval requirement.
-- Keep small changes in one development lane. When parallel development is appropriate and authorized, give each sub-Agent a bounded task and exclusive write paths under the existing worktree/PR rules. Studio's ordered image-production workflow remains serial.
-- Use existing focused checks first. Add regression coverage when it protects changed behavior; a documentation edit or model-default change needs proportionate validation, not tests that repeat the configuration value. Repeat or broaden passing checks only for new changes, failures, or unresolved risks, while completing every required gate.
-- Communicate in the user's language with concise progress updates. Report the result, relevant evidence, and remaining limits; distinguish a prepared PR, passed CI, merged source, and a tested or published App. Keep raw command output and implementation detail out of product-facing copy.
+Read the applicable entries before changing that area; do not load unrelated procedures. Cross-component behavior changes require all three architecture documents. Read-only questions use only the relevant contracts.
 
-## Architecture And Data
+| Task | Required reference and what it owns |
+|---|---|
+| Codex model/configuration | [Project defaults](docs/development/parallel-development.md#codex-project-defaults--codex-项目默认设置): GPT-6 Astra, explicit user choices, inherited reasoning, and the separate PetCore Studio default; [project config](.codex/config.toml) owns the setting |
+| Product/UI/component ownership | [Architecture overview](docs/architecture/overview.md): product boundaries, five-page navigation, first run, component and repository maps |
+| Startup, windows, overlay, dragging, bubbles, rendering, runtime replacement | [Runtime and IPC](docs/architecture/runtime-and-ipc.md): lifecycle, placement, pointer ownership, attachment geometry, and process contracts |
+| Persistence, settings, session projections, pet library/revisions | [Data model](docs/architecture/data-model.md): state ownership, display size, stable identity, bundled pets, and immutable publication |
+| Agent connectors, event mapping, session titles, routing | [Agent connectors](docs/integrations/agent-connectors.md): explicit semantic events, bounded session context, navigation, and managed operations |
+| Pet format, animation, timing, resolution, generation, or production QA | [Petpack V3](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md): nine actions, authored playback, source capacity, transparent frames, and production gates; use the applicable Maker/Studio Skill for execution |
+| Validation or live macOS checks | [Validation profiles](docs/development/validation.md) and [contributor validation](CONTRIBUTING.md#validation--验证): focused checks, build entrypoints, scoped host effects, and evidence boundaries |
+| Branches, shared paths, PR delivery, merge, or cleanup | [Development workflow](docs/development/parallel-development.md): direct/train procedures, ownership, commit checklist, and repository audit |
+| Official GitHub Release | [macOS release](docs/release/macos-release.md): exact-commit acceptance, dispatch, assets, and installation |
 
-Before a cross-component change, read the current [system architecture](docs/architecture/overview.md), [runtime and IPC](docs/architecture/runtime-and-ipc.md), and [data model](docs/architecture/data-model.md). Connector work also uses [Agent connector contracts](docs/integrations/agent-connectors.md); pet format work uses the [`.petpack` V3 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md).
+## Release Gate
 
-PetCore is the normal online state owner. Keep App/PetCore/CLI runtime identities synchronized, route external data through bounded typed validation, preserve ID-based immutable pet revisions, and do not read Agent credential stores. Do not restate the complete architecture in this instruction file; update the owning document and source together.
-
-## Repository Layout
-
-Use the repository layout below unless the codebase establishes a better local pattern:
-
-```text
-apps/macos/
-crates/petcore/
-crates/petcore-cli/
-crates/petcore-types/
-plugins/codex/
-plugins/claude-code/
-plugins/pi/
-plugins/opencode/
-plugins/dsh/
-skills/agent-pet-studio/
-skills/agent-pet-maker/
-schemas/
-docs/
-```
-
-## Development Guidelines
-
-- Keep changes scoped to the user's request, the product baseline, and the architecture already present in the repo.
-- Treat local `main` as read-only. Choose either a direct PR to `main` for a hotfix/small isolated change or a task PR to the main Agent's shared `gd-ops/train/*` for parallel/cross-component work; the train then opens one final PR to `main`. Follow [parallel development](docs/development/parallel-development.md).
-- Give every Agent/session an independent `gd-ops/task/*` or `gd-ops/fix/*` branch and worktree. One Agent owns each write path; sub-Agents hand work off by PR and never write directly into the train or another Agent's branch.
-- The main Agent coordinates a shared train, shared schemas/manifests/version files, changelog-fragment consolidation, dependency order, and the final train PR. Every development lane records user-visible changes under `changes/unreleased/`; only an explicit release-preparation branch may consume fragments into root `CHANGELOG.md`.
-- Before any handoff, explicitly stage the intended paths, audit the cached diff, commit, require a clean worktree, then push/open and verify the PR. After merge, the coordinator audits every worktree and local branch, fast-forwards local `main` only in a dedicated clean worktree, and removes only owned clean branches whose merged PR and deleted remote ref are proven. Follow the complete [commit and cleanup checklist](docs/development/parallel-development.md).
-- Prefer typed schemas and structured parsers over ad hoc string parsing.
-- Keep user-facing text bilingual when it belongs in public documentation or product onboarding.
-- Record user-visible development changes as globally unique typed fragments under `changes/unreleased/`. Release preparation freezes the fragment set, consumes it into root `CHANGELOG.md`, and preserves the one-to-one GitHub Release/tag/changelog version contract.
-- Avoid committing generated build output, local credentials, `.env` files, DerivedData, or temporary pet assets.
-- Do not read agent auth, token, cookie, API key, or secret files. The app should only consume explicit local event channels and capability tokens designed for this project.
-- When adding code, include the smallest useful tests or validation steps for the changed behavior.
-
-## macOS UI Verification And Input Safety
-
-- Use non-interactive command-line checks for builds, unit tests, protocol tests, and other validations that do not require the live macOS UI.
-- For live App, menu bar, desktop pet, bubble, window lifecycle, and other macOS UI behavior, Computer Use is recommended when it is available and useful. The executing agent may choose another suitable verification method based on the task and environment.
-- Before dispatching any GitHub Release, check out the exact clean `main` commit, launch its test App through `script/build_and_run.sh --run`, and use Computer Use to complete the basic-function acceptance checklist in `docs/release/macos-release.md`. Dispatch only with the same full commit in `commit` and `host_ui_tested_commit` plus `host_ui_result=passed`. If any check fails or cannot be observed, do not publish or claim success: report the evidence and stop so the next action is 交由用户决定.
-- Launch verification builds through the project's `script/build_and_run.sh` entry points. Keep host-affecting checks scoped to the intended App or an owned validation runtime, and distinguish directly observed UI behavior from conclusions based only on structural or automated checks.
-- Apply these practices to real-device lifecycle testing as well, including launch, close and reopen, quit, update handoff, menu commands, and multi-instance scenarios.
-
-## Product Constraints
-
-- Main navigation has five entries in this order: Pet Library, AI Pet Maker, Pet Configuration, Agent Connections, Service & Diagnostics.
-- First run is a resumable three-scene root presentation, not a sixth navigation entry. PetCore settings own only the versioned scene progress; pet choice and Agent actions reuse ordinary product operations, while demo phases remain View-local and never enter Agent events or diagnostics.
-- AI Pet Maker contains only new/edit briefs and their AI creation sessions. Pet Library and Service & Diagnostics remain separate top-level pages.
-- Agent Connections and desktop bubbles use `Agent → session` across all projects. Project directories and paths are not connection settings, display filters, or user-facing session identities.
-- Every projected session uses its latest bounded explicit title when available; until then, its bounded first user message is the display-title fallback. The bounded latest user message and current-turn Agent message remain separate display context. Anonymous-session fallback identity must be stable and content-free, never synthetic display-order numbering or project data.
-- Release bundles seed the local library with the validated `星雾团子`, `Bytebud 字节芽`, and `桃蕾` petpacks. Bundled and user pets are identified by stable manifest ID, not display name: same-name/different-ID pets coexist, and seeding never overwrites an existing same-ID local pet.
-- Bundled pets are read-only defaults: they can be previewed, enabled, and exported, but not deleted or modified in place. Customization must use a new pet ID.
-- Display size is a logical width in points, adjusted only in Pet Configuration → Appearance with a 100–300 pt slider (default 112 pt, 1 pt step, numeric readout, restore-default, keyboard and VoiceOver adjustable). Height derives from the fixed 208/192 canvas ratio. The overlay itself exposes no resize handle, hit region, or hover control; dragging the pet only moves it.
-- The pet body remains mouse-interactive and draggable whenever the overlay is visible, including while a frame alpha mask is unavailable during launch or a state transition. A valid mask may pass transparent pixels through, but a missing mask must fall back to the geometric pet region instead of disabling pet interaction.
-- Overlay placement has exactly one presentation owner. Dragging uses absolute screen coordinates from a captured start anchor, never accumulated event deltas; every presented frame, including each auxiliary panel, is derived from that anchor rather than from the previous frame, and no other layout pass repositions the composition mid-gesture. Release commits the presented position once with no momentum, projection, or rubber-band. A stale remote snapshot, a late or out-of-order acknowledgement, and a failed save must never change the presented position. The pet and its attached bubble/menu surfaces move as one composition root.
-- The session bubble attaches to the pet's top or bottom edge only, never to its left or right, and always at the same authored vertical gap. The side flips when the current one no longer fits; a screen edge changes only the horizontal attachment. Vertical distance is never clamped, shortened, or traded for fit.
-- The normalized Agent session events are `start`, `thinking`, `plan`, `tool`, `waiting`, `done`, and `failed`; badge copy may refine `tool` with a closed stable activity subtype, but must never infer thinking from start or generic timestamp churn. The portable package has six semantic actions (`idle`, `thinking`, `tool`, `waiting`, `done`, `failed`) plus three local-only interactions (`acknowledge`, `drag_left`, `drag_right`). Event `start` has no pet reaction and renders idle, while `thinking` and `plan` both use the package `thinking` action. Only an idle primary click selects `acknowledge`; pointer-down without bubble content adds a 160 ms low-amplitude press response and dragging cancels it. Local interactions never emit Agent events, alter or persist semantic state, or add gaze behavior.
-- Animation timing is per-frame, not a global rate. Each action declares `frame_durations_ms[]`, one of the V3 playback modes (`loop`, `periodic`, `burst_then_settle`, `burst_then_idle`, `once_then_return`), and a `reduced_motion_frame_index`. Thinking, tool, and done use bounded `burst_then_idle` entries so a long semantic lease returns visually to idle instead of freezing on the final action frame; waiting and failed use `burst_then_settle`. There are no Standard/Smooth playback profiles, package-wide native FPS, or `once_hold`. The runtime plays authored durations directly: it never resamples, retimes, subsamples, restarts an unchanged semantic state, or catches up missed frames after a stall. Final combined producer QA emits an 8–12 second presence preview bound to all nine actions and rejects semantic activity that freezes in under one second or loops mechanically.
-- Render resolution has three exact runtime tiers, all 12:13 and independent of display size: `low` 192×208, `standard` 384×416 (default), and `high` 576×624. 192×208 is the hard floor and every width is a multiple of 192, which keeps sheet edges on 16-pixel boundaries. One package uses one tier for every frame. An image model is not required or trusted to return those exact dimensions: every newly generated frame starts as a fully opaque flat-background 12:13 source crop at least as large as its selected target, the shared transparent-frame script retains that source-resolution transparent master, and it may perform one direct linear-light premultiplied-Alpha downscale to the runtime tier. Model-native transparency, upscaling, super-resolution, padding a smaller crop to a target canvas, independent per-pose fit/recentering, cascaded or post-process resizing, ad hoc matte/edge filters, and substituting multiple batches for missing source capacity are invalid. Downscaling never relaxes runtime-size identity, action, distinct-pose, anatomy, prop, crop, continuity, or playback QA. Package/runtime support is broader than producer capability: external source-capable workflows may build `high`, while ChatGPT/Codex built-in `imagegen` and the App's Codex-backed Studio support creation only at `low` and `standard` and must reject `high` before attempting generation.
+Before any GitHub Release dispatch, use the exact clean `main` commit, launch its test App through `script/build_and_run.sh --run`, and complete the release document's stress and Computer Use acceptance. Dispatch only with that same full `commit` and `host_ui_tested_commit` plus `host_ui_result=passed`. If a check fails or cannot be observed, do not publish or claim success: preserve the evidence and stop; the next action is 交由用户决定.

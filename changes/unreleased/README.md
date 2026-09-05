@@ -1,6 +1,6 @@
 # Unreleased changelog fragments / 未发布变更片段
 
-Train-based task PRs put one bounded JSON fragment here for every user-visible change. The train coordinator runs `./script/changelog_fragments.py consume --apply` before marking the train PR to `main` ready. Direct PRs to `main` update root `CHANGELOG.md` directly and must not leave a fragment. / 基于 train 的任务 PR 应为每项用户可见变化在此写入一个有界 JSON 片段；train 协调者在将面向 `main` 的 PR 标记为 ready 前运行 `./script/changelog_fragments.py consume --apply`。直接进入 `main` 的 PR 应直接更新根 `CHANGELOG.md`，不得遗留片段。
+Every direct, task, and train development PR records each user-visible change as a globally unique `<id>.json` fragment here. Ordinary development leaves root `CHANGELOG.md` untouched. Only an explicit release-preparation branch may freeze and consume the fragments. See [changelog and integration](../../docs/development/parallel-development.md#changelog-and-final-train-integration--变更日志与-train-收口) for commands and [macOS release](../../docs/release/macos-release.md) for the version/tag/Release contract. / 所有 direct、task 与 train 开发 PR 均在此以全局唯一的 `<id>.json` 记录用户可见变化，普通开发不修改根 `CHANGELOG.md`。仅显式发布准备分支可冻结并汇总片段；命令和版本、tag、Release 契约见上述文档。
 
 ```json
 {
