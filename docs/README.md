@@ -21,7 +21,7 @@ When prose disagrees with code, investigate the implementation and update the si
 | [Agent connectors](integrations/agent-connectors.md) | Host adapters, event mapping, routing, managed operations, and privacy / Agent 适配、事件映射、路由、受管操作与隐私 |
 | [`.petpack` V3](specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) | Portable package format and producer conformance / 可移植宠物包格式与制作合规要求 |
 | [Validation profiles](development/validation.md) | What each validation layer proves / 各验证层能够证明什么 |
-| [Parallel development](development/parallel-development.md) | Direct/train PR lanes, Agent ownership, auto-merge, and protected delivery / direct/train PR 通道、Agent 所有权、自动合并与受保护交付 |
+| [Parallel development](development/parallel-development.md) | Codex project defaults, direct/train PR lanes, Agent ownership, auto-merge, and protected delivery / Codex 项目默认设置、direct/train PR 通道、Agent 所有权、自动合并与受保护交付 |
 | [macOS release](release/macos-release.md) | Official GitHub Release procedure and installation contract / 正式 GitHub Release 流程与安装合同 |
 | [CHANGELOG](../CHANGELOG.md) | Versioned user-visible changes / 按版本记录的用户可见变化 |
 

@@ -1,0 +1,3 @@
+# Project model default; inherit the user's reasoning effort and host settings.
+# 项目默认模型；推理强度与宿主设置沿用用户配置。
+model = "gpt-6-astra"

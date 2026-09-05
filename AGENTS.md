@@ -15,6 +15,16 @@ The repository keeps durable current-state documentation, not completed design p
 
 The V1 scope is intentionally narrow. Do not add public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or a full agent mission-control platform unless the user explicitly changes scope. DeepSeek Harness (dsh) was explicitly authorized and included in scope by the user on 2026-08-18.
 
+## Codex And Task Execution
+
+- [Project Codex configuration](.codex/config.toml) selects GPT-6 Astra for repository work. Preserve an explicit user model choice and the user's compatible reasoning effort. The [development workflow](docs/development/parallel-development.md) explains configuration scope; Pet Studio's runtime model is owned separately by PetCore.
+- Carry an authorized change through implementation, relevant validation, and the repository's PR handoff. Resolve routine details from the implementation and accepted scope. Treat later corrections and status questions as updates to the same task unless the user cancels or replaces it.
+- Reuse authorization already given for the task. Prepare the concrete change before requesting any still-required decision. Ask only when missing information changes the requested outcome or an applicable boundary prevents progress; continue independent work while waiting. Keep the protected-branch, shared-path ownership, credential, pet-production, and release requirements below in force.
+- The current user's instructions take precedence over repository and Skill guidance within system and host constraints. If a file causes a pause or scope change, identify its path and exact instruction, explain the unresolved conflict, and ask one focused question. Do not turn a recommendation into an additional approval requirement.
+- Keep small changes in one development lane. When parallel development is appropriate and authorized, give each sub-Agent a bounded task and exclusive write paths under the existing worktree/PR rules. Studio's ordered image-production workflow remains serial.
+- Use existing focused checks first. Add regression coverage when it protects changed behavior; a documentation edit or model-default change needs proportionate validation, not tests that repeat the configuration value. Repeat or broaden passing checks only for new changes, failures, or unresolved risks, while completing every required gate.
+- Communicate in the user's language with concise progress updates. Report the result, relevant evidence, and remaining limits; distinguish a prepared PR, passed CI, merged source, and a tested or published App. Keep raw command output and implementation detail out of product-facing copy.
+
 ## Architecture And Data
 
 Before a cross-component change, read the current [system architecture](docs/architecture/overview.md), [runtime and IPC](docs/architecture/runtime-and-ipc.md), and [data model](docs/architecture/data-model.md). Connector work also uses [Agent connector contracts](docs/integrations/agent-connectors.md); pet format work uses the [`.petpack` V3 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md).
