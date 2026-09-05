@@ -54,7 +54,7 @@ Rows expose `exact_session`, `agent_host`, or `unavailable`. The App acknowledge
 
 ## Session display fields
 
-Each projected session carries separate bounded fields for title, latest user message, Agent message, and normalized activity. The title is the latest explicit title, falling back to the first user message only until one exists. Later prompts update context without renaming the session. The bubble body selects only the newest Agent message or explicit thinking/plan text and retains it across user, tool, and lifecycle activity. Tool and other activity still update the closed status summary but do not enter or clear the body. Navigation notices remain a separate higher-priority presentation.
+Each projected session carries separate bounded fields for title, latest user message, Agent message, and normalized activity. The title is the latest explicit title, falling back to the first user message only until one exists. Later prompts update context without renaming the session. Anonymous fallback identity is stable and content-free, never display-order numbering or project data. The bubble body selects only the newest Agent message or explicit thinking/plan text and retains it across user, tool, and lifecycle activity. Tool and other activity still update the closed status summary but do not enter or clear the body. Navigation notices remain a separate higher-priority presentation.
 
 Only root Agent sessions enter the session projection. Connectors use explicit host lineage—not user-facing titles or display order—to suppress child sessions: OpenCode `parentID`, Codex App Server sub-Agent source kinds and `parentThreadId`, Pi session-header `parentSession`, Claude sidechain markers, and DeepSeek Harness `session.header.origin === 'subagent'` / `parentSession`. Pi parallel subagent runners that omit `parentSession` are additionally recognized only through Pi's closed, host-reserved `subagent-*` session-name namespace; arbitrary session names are not classified. The suppression marker contains only the child session identity; it deletes any earlier projection for that identity, blocks later events, and never persists the parent identity or reserved name. Sub-Agent lifecycle may still update the owning root session's status, but it never creates another desktop card.
 
@@ -88,7 +88,7 @@ Connectors preserve an allowlisted source event for audit and map only stable us
 | `done` | Supported successful settled boundary with required prior activation | `done` |
 | `failed` | Terminal task/session failure | `failed` |
 
-Local package actions `acknowledge`, `drag_left`, and `drag_right` never emit events or change semantic state. Event labels remain distinct even when two events share one pet action.
+Local package actions `acknowledge`, `drag_left`, and `drag_right` never emit events or change semantic state. Event labels remain distinct even when two events share one pet action. Badge copy may refine `tool` only through a closed stable activity subtype. Never infer `thinking` from `start` or generic timestamp churn.
 
 Ordinary `session_active` is a bounded observation, not a permanent heartbeat. `waiting` and `failed` remain until a newer event resolves them. Repeated terminal notifications in one activity epoch share one completion acknowledgement identity; a later true activation creates a new scope.
 

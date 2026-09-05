@@ -73,7 +73,7 @@ Validation and runtime-frame preparation occur in private staging. Publication s
 
 `pet.list` and `state.snapshot` expose validated V3 action/timing data plus derived current revision metadata. `pet.history` revalidates a bounded set of owned revisions and projects only safe edit-baseline/job summary fields. It never exposes forms, prompts, messages, provider sessions, or private paths.
 
-Bundled authority requires both a fixed manifest ID and PetCore-assigned origin/provenance. An ordinary same-ID pet is preserved and never gains bundled authority. A changed trusted bundled resource appends a revision without deleting history or changing the selected pet. Bundled pets remain read-only.
+Bundled authority requires both a fixed manifest ID and PetCore-assigned origin/provenance. An ordinary same-ID pet is preserved and never gains bundled authority. A changed trusted bundled resource appends a revision without deleting history or changing the selected pet. Bundled pets remain read-only: they may be previewed, enabled, and exported, but never deleted or modified in place; customization creates a new pet ID. Same-name/different-ID pets coexist, and seeding never overwrites an existing same-ID user pet.
 
 Runtime assets are derived from the immutable package. Cached asset fingerprints include the current validator-contract domain, so a stricter media gate revalidates unchanged installed packages without a database migration. `pet.assets.repair` forces package, cover, and all nine action directories through fresh staged validation and atomically replaces the derived assets.
 
