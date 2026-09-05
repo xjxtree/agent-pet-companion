@@ -53,7 +53,7 @@ Agent 连接按 Agent 和会话组织，不要求你逐个配置项目目录。A
 
 ## 创建自己的桌宠
 
-在 **AI 宠物制作** 中描述外形、风格和你希望保留的特征，App 会通过本机可用的 Codex 能力创建新宠物，也可以基于现有宠物进行修改。
+在 **AI 宠物制作** 中描述外形、风格和你希望保留的特征，App 会通过本机可用的 Codex 能力，默认使用 GPT-6 Astra 创建新宠物，也可以基于现有宠物进行修改。
 
 <p align="center">
   <img src="docs/assets/screenshots/ai-pet-maker.png" width="1120" alt="Agent Pet Companion 的 AI 宠物制作工作区">

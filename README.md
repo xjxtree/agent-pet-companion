@@ -53,7 +53,7 @@ Agent Connections is organized by Agent and session, so you do not need to confi
 
 ## Create your own pet
 
-In **AI Pet Maker**, describe the appearance, style, and important traits you want to keep. The App uses locally available Codex capabilities to create a new pet or edit an existing one.
+In **AI Pet Maker**, describe the appearance, style, and important traits you want to keep. The App uses locally available Codex capabilities, with GPT-6 Astra as the default model, to create a new pet or edit an existing one.
 
 <p align="center">
   <img src="docs/assets/screenshots/ai-pet-maker.png" width="1120" alt="AI Pet Maker creation workspace in Agent Pet Companion">

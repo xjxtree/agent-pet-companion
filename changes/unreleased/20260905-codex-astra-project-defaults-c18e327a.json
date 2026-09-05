@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Changed",
+  "scope": "development",
+  "summary_en": "Codex project configuration now selects GPT-6 Astra, with aligned Agent execution guidance and bilingual model setup documentation.",
+  "summary_zh": "Codex 项目配置默认选择 GPT-6 Astra，并同步 Agent 执行约定与中英文模型设置文档。"
+}

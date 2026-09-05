@@ -9,13 +9,15 @@ Agent Pet Companion is a local-first native macOS project. Keep changes focused 
 - Rust toolchain pinned by `rust-toolchain.toml`, including `rustfmt` and `clippy`
 - Python 3; release visual validation also uses the pinned Pillow dependency / Python 3；发布视觉校验还会使用固定版本的 Pillow
 
+Codex repository work uses the versioned [project configuration](.codex/config.toml) and [Agent instructions](AGENTS.md). See [Codex project defaults](docs/development/parallel-development.md#codex-project-defaults--codex-项目默认设置) for model selection, inherited reasoning effort, and the separate in-App Studio setting. / Codex 仓库开发使用受版本管理的项目配置与 Agent 指令；模型选择、继承的推理强度及独立的 App 内 Studio 设置见上述说明。
+
 ## Workflow / 开发流程
 
 1. Read [AGENTS.md](AGENTS.md), then inspect the implementation, schemas, manifests, tests, and the owning document listed in [docs/README.md](docs/README.md). / 先阅读 `AGENTS.md`，再检查相关实现、schema、manifest、测试和负责该主题的文档。
 2. Keep local `main` read-only. The Agent chooses a direct `gd-ops/task/*` or `gd-ops/fix/*` PR to `main` for hotfix/small isolated work, or joins the main Agent's shared `gd-ops/train/*` for parallel/cross-component work. / 本地 `main` 只读；热修复或小型独立任务直接 PR 至 `main`，并行或跨组件任务加入主 Agent 的共享 train。
 3. Select one typed domain and claim from `development/domains.json`, register it with `development_flow.py branch-claim`, and obtain explicit approval before touching Amber or Red shared paths. The conflict preflight rejects overlapping claims before implementation. / 从领域清单选择一个 domain/claim 并登记；修改 Amber/Red 共享路径前必须获得显式批准，冲突预检会在实现前拒绝重叠声明。
 4. Give each Agent/session an independent branch and worktree, preserve unrelated changes, and hand sub-Agent work to the train only through task PRs. / 每个 Agent/会话使用独立分支与 worktree，保留无关改动，并仅通过任务 PR 将子 Agent 工作交给 train。
-5. Add the smallest useful regression test and update the owning contract when behavior changes. Use `validate_local_tests.sh --plan-only` to inspect the domain-focused local test plan, then run it when bounded feedback is useful. / 行为变化时补充最小有效回归测试并更新对应契约；可先查看领域聚焦测试计划，再按需执行有界本地反馈。
+5. Validate changed behavior with the smallest useful existing checks, adding regression coverage when it protects a real behavior or failure boundary. For documentation or model-default edits, validate the affected contracts without adding tests that repeat configuration values. Update the owning document, inspect the domain-focused plan with `validate_local_tests.sh --plan-only`, and run the relevant checks without repeating successful work unnecessarily. / 优先使用最小有效的现有检查验证行为变化，仅在保护实际行为或故障边界时补充回归测试。文档或模型默认值修改应验证相关契约，无需新增复述配置值的测试。同步对应文档，查看领域聚焦计划并执行相关检查，避免无必要地重复已通过的工作。
 6. Every direct, task, and train development PR adds a globally unique `changes/unreleased/*.json` fragment. Only an explicit release-preparation branch freezes and consumes fragments into root `CHANGELOG.md`. / 所有开发 PR 都写入全局唯一变更片段；只有显式 release-preparation 分支可冻结并汇总到根变更日志。
 
 The complete branch, worktree, ownership, auto-merge, and coordinator commands are defined in [Parallel development](docs/development/parallel-development.md). / 完整分支、worktree、所有权、自动合并与协调命令见并行开发文档。
