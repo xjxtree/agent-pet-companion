@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Changed",
+  "scope": "maker",
+  "summary_en": "AI Pet Maker now defaults to GPT-6 Astra for new and resumed Codex Studio turns, preserving medium reasoning and explicit model overrides.",
+  "summary_zh": "AI 宠物制作的新建与恢复 Codex Studio 回合默认使用 GPT-6 Astra，保留中等推理强度与显式模型覆盖。"
+}

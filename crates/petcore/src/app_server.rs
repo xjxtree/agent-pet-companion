@@ -4918,7 +4918,7 @@ fn pet_studio_collaboration_mode(job_id: &str, form: &GenerationForm) -> Value {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty() && value.chars().count() <= 80)
-        .unwrap_or_else(|| "gpt-5.6-sol".to_string());
+        .unwrap_or_else(|| "gpt-6-astra".to_string());
     json!({
         "mode": "plan",
         "settings": {
