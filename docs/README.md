@@ -2,14 +2,13 @@
 
 `README.md` and `README.zh-CN.md` are the product entrypoints. This directory contains the durable technical contracts used by maintainers and Agents. / 根目录 README 面向用户；本目录只保存维护者与 Agent 需要长期维护的技术契约。
 
-## Source order / 信息优先级
+## Evidence and intended behavior / 证据与预期行为
 
-1. Current user request / 当前用户要求
-2. Implementation, typed schemas, manifests, and tests / 实现、类型化 schema、manifest 与测试
-3. The owning document below / 下表中负责该主题的文档
-4. Public README / 面向用户的 README
+- Establish intended behavior from the current user request and the effective product, interface, format, and release contracts in the owning documents below. Preserve explicit scope changes. / 根据当前用户要求和下列所属文档中的有效产品、接口、格式及发布契约确认预期行为，保留明确的范围变更。
+- Establish current behavior from the touched implementation, typed schemas, manifests, tests, and runtime evidence. Passing tests support the cases they cover; they do not by themselves define the requirement or prove it is met in every case. / 根据相关实现、类型化 schema、manifest、测试和运行证据确认当前行为；测试通过支持其覆盖的情形，不能独立定义需求或证明所有情形符合需求。
+- Use the public README for the supported user-facing surface and keep it consistent with the owning contracts. / 用公开 README 确认支持的用户功能，并与所属契约保持一致。
 
-When prose disagrees with code, investigate the implementation and update the single owning document. / 文档与实现冲突时，应核对实现并更新唯一负责该主题的文档。
+When evidence and a contract disagree, determine whether the implementation is defective, the document is stale, or a requirement is unresolved. Correct the responsible source and its affected references; do not rewrite a requirement merely to match current code, or describe planned behavior as implemented. Ask only when the unresolved requirement would materially change the result. / 证据与契约冲突时，核实是实现缺陷、文档过时还是需求未定，再修正负责来源及受影响的引用；不为迁就代码而改写需求，也不把计划写成已实现。仅在未定需求会实质改变结果时澄清。
 
 ## Documents / 文档
 

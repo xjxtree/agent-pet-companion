@@ -4,7 +4,7 @@ Agent Pet Companion is a native macOS desktop pet app with an AI pet studio, loc
 
 ## Sources And Scope
 
-Use the current user request, then the touched implementation/typed contracts/tests, then the owning document in [docs/README.md](docs/README.md), then the public README. Investigate prose/code disagreements and update the owning document. Keep durable current-state contracts in the repository; task plans, audits, progress logs, and command evidence belong in PRs, CI, issues, or release notes.
+Use the current user request and effective contracts to establish intended behavior; use the touched implementation, schemas, manifests, tests, and runtime evidence to establish current behavior. Follow the [evidence guidance](docs/README.md#evidence-and-intended-behavior--证据与预期行为) when they disagree. Existing code or passing tests alone do not redefine the requirement. Keep durable current-state contracts in the repository; task plans, audits, progress logs, and command evidence belong in PRs, CI, issues, or release notes.
 
 Keep the existing V1 scope: no public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or full mission-control platform unless the user changes scope. DeepSeek Harness is supported.
 
