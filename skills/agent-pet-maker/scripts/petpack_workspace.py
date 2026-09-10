@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -26,6 +27,11 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+
+_evidence_spec = importlib.util.spec_from_file_location("generation_evidence", Path(__file__).with_name("generation_evidence.py"))
+assert _evidence_spec and _evidence_spec.loader
+generation_evidence = importlib.util.module_from_spec(_evidence_spec)
+_evidence_spec.loader.exec_module(generation_evidence)
 
 HELPER_SCHEMA = "apc.pet-maker-helper.v1"
 WORKSPACE_SCHEMA = "apc.pet-maker-workspace.v1"
@@ -154,7 +160,6 @@ MAX_PROMPT_BYTES = 64 * 1024
 VISIBLE_ALPHA_THRESHOLD = 16
 COPY_CHUNK_BYTES = 1024 * 1024
 CLI_TIMEOUT_SECONDS = 300
-MOTION_PREVIEW_SIZE = (192, 208)
 MOTION_KEYFRAME_COUNT = 5
 PRESENCE_PREVIEW_MIN_MS = 8_000
 PRESENCE_PREVIEW_TARGET_MS = 10_000
@@ -1776,15 +1781,9 @@ def normalized_motion_frame(path: Path) -> Any:
         with Image.open(path) as decoded:
             if decoded.format != "PNG":
                 raise MakerError("invalid_assets", f"Frame {path.name} is not a PNG")
-            rgba = decoded.convert("RGBA")
-            if rgba.size != MOTION_PREVIEW_SIZE:
-                resampling = getattr(Image, "Resampling", Image).LANCZOS
-                rgba = rgba.resize(MOTION_PREVIEW_SIZE, resampling)
-            return Image.frombytes(
-                "RGBA",
-                MOTION_PREVIEW_SIZE,
-                canonical_premultiplied_rgba(rgba),
-            )
+            # Display artifacts keep straight Alpha and exact package pixels.
+            # Premultiplication belongs only to hashes and numerical metrics.
+            return decoded.convert("RGBA")
     except MakerError:
         raise
     except (OSError, ValueError, UnidentifiedImageError) as error:
@@ -1902,15 +1901,21 @@ def maximum_adjacent_step(values: list[float], relative: bool = False) -> float:
 
 
 def motion_metrics(frames: list[Any], loops: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    from PIL import Image
+
     signatures = [motion_frame_signature(frame) for frame in frames]
+    metric_frames = [
+        Image.frombytes("RGBA", frame.size, canonical_premultiplied_rgba(frame))
+        for frame in frames
+    ]
     adjacent_deltas = [
         normalized_frame_delta(previous, current)
-        for previous, current in zip(frames, frames[1:])
+        for previous, current in zip(metric_frames, metric_frames[1:])
     ]
     median_delta = statistics.median(adjacent_deltas) if adjacent_deltas else 0.0
     max_delta = max(adjacent_deltas, default=0.0)
     max_delta_index = adjacent_deltas.index(max_delta) + 1 if adjacent_deltas else 0
-    seam_delta = normalized_frame_delta(frames[-1], frames[0]) if loops and len(frames) > 1 else 0.0
+    seam_delta = normalized_frame_delta(metric_frames[-1], metric_frames[0]) if loops and len(frames) > 1 else 0.0
     centroid_steps = [
         math.hypot(
             current["centroid_x"] - previous["centroid_x"],
@@ -1976,9 +1981,9 @@ def motion_metrics(frames: list[Any], loops: bool) -> tuple[dict[str, Any], list
         for index in range(1, len(frames) - 1)
         if (
             fit := linear_blend_fit(
-                frames[index - 1],
-                frames[index],
-                frames[index + 1],
+                metric_frames[index - 1],
+                metric_frames[index],
+                metric_frames[index + 1],
             )
         )
         is not None
@@ -2004,8 +2009,8 @@ def motion_metrics(frames: list[Any], loops: bool) -> tuple[dict[str, Any], list
         "linear_blend_candidate_count": len(blend_candidates),
         "linear_blend_candidates": blend_candidates[:8],
         "loop_seam_delta": round(seam_delta, 6) if loops else None,
-        "preview_width": MOTION_PREVIEW_SIZE[0],
-        "preview_height": MOTION_PREVIEW_SIZE[1],
+        "preview_width": frames[0].width,
+        "preview_height": frames[0].height,
     }
     warnings: list[dict[str, Any]] = []
 
@@ -2088,7 +2093,7 @@ def reject_objective_motion_integrity_failures(
         evidence = metrics.get("edge_contact_frames", [])
         raise MakerError(
             "invalid_motion_registration",
-            f"State {state} has visible pixels touching the 192 × 208 runtime frame edge "
+            f"State {state} has visible pixels touching the runtime frame edge "
             f"in {edge_contact_count} frame(s) ({evidence}); the action is clipped. "
             "Regenerate or recompose the coherent row with fixed cell bounds and at least "
             "one transparent pixel of padding on every side before using motion-lock or "
@@ -2161,7 +2166,10 @@ def build_presence_preview(
     manifest: dict[str, Any],
     timing: dict[str, Any],
     output_dir: Path,
+    audited_states: list[str] | None = None,
+    revision: bool = False,
 ) -> dict[str, Any]:
+    audited_states = list(STATES) if audited_states is None else audited_states
     frame_cache: dict[str, list[Any]] = {}
 
     def state_frames(state: str) -> list[Any]:
@@ -2179,6 +2187,8 @@ def build_presence_preview(
         return authored * int(playback.get("entry_repeat_count", 1))
 
     for state in ("thinking", "tool", "waiting", "done", "failed"):
+        if state not in audited_states:
+            continue
         active_ms = active_duration_ms(state)
         if not MIN_SEMANTIC_ACTIVE_MS <= active_ms <= MAX_SEMANTIC_ACTIVE_MS:
             raise MakerError(
@@ -2223,42 +2233,61 @@ def build_presence_preview(
             }
         )
 
-    append_action("idle", 1)
-    append_action(
-        "thinking",
-        int(timing["state_timings"]["thinking"]["playback"]["entry_repeat_count"]),
-    )
-    append_idle_rest(700)
-    append_action(
-        "tool",
-        int(timing["state_timings"]["tool"]["playback"]["entry_repeat_count"]),
-    )
-    append_idle_rest(700)
-    append_action(
-        "done",
-        int(timing["state_timings"]["done"]["playback"]["entry_repeat_count"]),
-    )
+    if revision:
+        # Show two separate occurrences of one edited action. All state files
+        # remain digest-bound and every edited action has its full-size preview.
+        # Unchanged legacy timing never has to fit this new-production overview.
+        focus = next(state for state in STATES if state in audited_states)
+        repeats = int(timing["state_timings"][focus]["playback"].get("entry_repeat_count", 1))
+        active_ms = active_duration_ms(focus)
+        rest_total = max(1500, PRESENCE_PREVIEW_TARGET_MS - 2 * active_ms)
+        rests = [rest_total // 3, rest_total // 3, rest_total - 2 * (rest_total // 3)]
+        append_idle_rest(rests[0])
+        append_action(focus, repeats)
+        append_idle_rest(rests[1])
+        append_action(focus, repeats)
+        pre_settle_duration = sum(preview_durations)
+        append_idle_rest(rests[2])
+        duration_ms = sum(preview_durations)
+        if not PRESENCE_PREVIEW_MIN_MS <= duration_ms <= PRESENCE_PREVIEW_MAX_MS:
+            raise MakerError("invalid_presence_timing", "Edited action cannot fit its authored presence preview")
+    else:
+        append_action("idle", 1)
+        append_action(
+            "thinking",
+            int(timing["state_timings"]["thinking"]["playback"]["entry_repeat_count"]),
+        )
+        append_idle_rest(700)
+        append_action(
+            "tool",
+            int(timing["state_timings"]["tool"]["playback"]["entry_repeat_count"]),
+        )
+        append_idle_rest(700)
+        append_action(
+            "done",
+            int(timing["state_timings"]["done"]["playback"]["entry_repeat_count"]),
+        )
 
-    pre_settle_duration = sum(preview_durations)
-    if pre_settle_duration > PRESENCE_PREVIEW_MAX_MS - 500:
-        raise MakerError(
-            "invalid_presence_timing",
-            "The authored idle, thinking, tool, and done sequence cannot fit inside "
-            "the 8–12 second presence preview without retiming frames",
-        )
-    final_rest_ms = max(500, PRESENCE_PREVIEW_TARGET_MS - pre_settle_duration)
-    if pre_settle_duration + final_rest_ms > PRESENCE_PREVIEW_MAX_MS:
-        raise MakerError(
-            "invalid_presence_timing",
-            "The presence preview exceeds 12 seconds after its required idle settle",
-        )
-    append_idle_rest(final_rest_ms)
-    duration_ms = sum(preview_durations)
-    if not PRESENCE_PREVIEW_MIN_MS <= duration_ms <= PRESENCE_PREVIEW_MAX_MS:
-        raise MakerError(
-            "invalid_presence_timing",
-            f"Presence preview duration is {duration_ms} ms; expected 8000–12000 ms",
-        )
+        pre_settle_duration = sum(preview_durations)
+        if pre_settle_duration > PRESENCE_PREVIEW_MAX_MS - 500:
+            raise MakerError(
+                "invalid_presence_timing",
+                "The authored idle, thinking, tool, and done sequence cannot fit inside "
+                "the 8–12 second presence preview without retiming frames",
+            )
+        final_rest_ms = max(500, PRESENCE_PREVIEW_TARGET_MS - pre_settle_duration)
+        if pre_settle_duration + final_rest_ms > PRESENCE_PREVIEW_MAX_MS:
+            raise MakerError(
+                "invalid_presence_timing",
+                "The presence preview exceeds 12 seconds after its required idle settle",
+            )
+        append_idle_rest(final_rest_ms)
+        duration_ms = sum(preview_durations)
+        if not PRESENCE_PREVIEW_MIN_MS <= duration_ms <= PRESENCE_PREVIEW_MAX_MS:
+            raise MakerError(
+                "invalid_presence_timing",
+                f"Presence preview duration is {duration_ms} ms; expected 8000–12000 ms",
+            )
 
     path = output_dir / "previews" / "presence-preview.webp"
     save_motion_preview(path, preview_frames, preview_durations)
@@ -2267,6 +2296,7 @@ def build_presence_preview(
     }
     return {
         "path": str(path.relative_to(output_dir)),
+        "mode": "revision_focus" if revision else "creation_overview",
         "duration_ms": duration_ms,
         "minimum_duration_ms": PRESENCE_PREVIEW_MIN_MS,
         "maximum_duration_ms": PRESENCE_PREVIEW_MAX_MS,
@@ -2284,7 +2314,7 @@ def save_motion_keyframes(
 ) -> None:
     from PIL import Image, ImageDraw
 
-    cell_width, cell_height = MOTION_PREVIEW_SIZE
+    cell_width, cell_height = rows[0][1][0].size
     header_height = 28
     sheet = Image.new(
         "RGB",
@@ -2296,7 +2326,7 @@ def save_motion_keyframes(
         y = row * (cell_height + header_height)
         draw.text((8, y + 7), f"{state} · frames {', '.join(map(str, indices))}", fill="white")
         for column, (frame, frame_index) in enumerate(zip(frames, indices)):
-            cell = checkerboard(MOTION_PREVIEW_SIZE)
+            cell = checkerboard((cell_width, cell_height))
             cell.alpha_composite(frame)
             x = column * cell_width
             sheet.paste(cell.convert("RGB"), (x, y + header_height))
@@ -2380,6 +2410,11 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
         )
     timing = manifest_timing_contract(manifest)
     combined_run = not bool(args.state)
+    baseline_value = getattr(args, "baseline", None)
+    if baseline_value and not combined_run:
+        raise MakerError("invalid_request", "--baseline selects the complete changed-state QA; do not combine it with --state")
+    if baseline_value and context:
+        raise MakerError("invalid_request", "--workspace already owns its modify baseline")
     selected = sorted(set(args.state or []), key=STATES.index)
     if selected:
         current_files, state_counts = collect_selected_state_files(
@@ -2408,6 +2443,23 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
                 "no_visual_changes",
                 "Modify produced no changed states to inspect",
             )
+    if baseline_value:
+        baseline = Path(baseline_value).expanduser().resolve()
+        if baseline == source_dir:
+            raise MakerError("invalid_input", "Baseline must differ from the current source")
+        baseline_manifest = read_json(baseline / "manifest.json", "baseline manifest")
+        for field in ("id", "created_at", "quality", "render_size"):
+            if baseline_manifest.get(field) != manifest.get(field):
+                raise MakerError("invalid_manifest", f"Revision must preserve baseline {field}")
+        baseline_timing = manifest_timing_contract(baseline_manifest)
+        baseline_files, baseline_counts = collect_state_files(baseline, baseline_manifest)
+        validate_exact_state_counts(baseline_counts, baseline_timing)
+        selected = compare_modified_states(baseline_files, current_files)
+        for state in STATES:
+            if baseline_timing["state_timings"][state] != timing["state_timings"][state] and state not in selected:
+                raise MakerError("invalid_assets", f"Timing changes require regenerated frames for {state}")
+        if not selected:
+            raise MakerError("no_visual_changes", "Modify produced no changed states to inspect")
     if not selected:
         selected = list(STATES)
 
@@ -2420,6 +2472,9 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
     for state in selected:
         paths = ordered_state_frame_paths(source_dir, manifest, state)
         frames = [normalized_motion_frame(path) for path in paths]
+        expected_size = (manifest["render_size"]["width"], manifest["render_size"]["height"])
+        if any(frame.size != expected_size for frame in frames):
+            raise MakerError("invalid_assets", f"State {state} frames do not match manifest.render_size")
         state_timing = timing["state_timings"][state]
         playback = state_timing["playback"]
         loops = playback["mode"] in {"loop", "periodic"} or (
@@ -2476,7 +2531,10 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
     keyframes_path = output_dir / "keyframes.png"
     save_motion_keyframes(keyframes_path, keyframe_rows)
     presence_preview = (
-        build_presence_preview(source_dir, manifest, timing, output_dir)
+        build_presence_preview(
+            source_dir, manifest, timing, output_dir, selected,
+            bool(baseline_value or (context and context.get("operation") == "modify")),
+        )
         if combined_run
         else None
     )
@@ -2486,8 +2544,8 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
         "manifest_id": manifest.get("id"),
         "timing_digest": motion_timing_digest(timing),
         "preview_size": {
-            "width": MOTION_PREVIEW_SIZE[0],
-            "height": MOTION_PREVIEW_SIZE[1],
+            "width": manifest["render_size"]["width"],
+            "height": manifest["render_size"]["height"],
         },
         "audited_states": selected,
         "frame_set_digest": motion_frame_set_digest(state_digests),
@@ -2505,6 +2563,14 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
     }
     if presence_preview is not None:
         report["presence_preview"] = presence_preview
+    if combined_run:
+        required_objects = list(selected)
+        if not (baseline_value or (context and context.get("operation") == "modify")):
+            required_objects.insert(0, "base")
+        try:
+            report["generation_evidence_sha256"] = generation_evidence.binding(source_dir.parent, required_objects)
+        except (OSError, ValueError) as error:
+            raise MakerError("invalid_generation_evidence", str(error)) from error
     report_path = output_dir / "report.json"
     write_json_atomic(report_path, report)
     return {
@@ -3357,6 +3423,82 @@ def run_production_verification(
     }
 
 
+def validate_source_with_cli(
+    cli: Path, source_dir: Path, manifest: dict[str, Any], timing: dict[str, Any],
+    source_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stage the format marker, validate, and leave failures explicitly false."""
+    validation_path = source_dir / "build" / "validation.json"
+    marker = {
+        "schema_version": VALIDATION_SCHEMA,
+        "ok": True,
+        "validator": "agent-pet-maker",
+        "frame_count": sum(timing["state_frame_counts"].values()),
+        "states": timing["states"],
+        "state_frame_counts": timing["state_frame_counts"],
+        "skipped": "Temporary format marker; PetCore validation is pending.",
+    }
+    write_json_atomic(validation_path, marker)
+    try:
+        validation = run_cli(cli, ["petpack", "validate", str(source_dir)], "validation_failed")
+        if validation.get("ok") is not True:
+            raise MakerError("validation_failed", "PetCore did not confirm source validation")
+        write_json_atomic(validation_path, {
+            "schema_version": VALIDATION_SCHEMA,
+            "ok": True,
+            "validator": "petcore-cli",
+            "frame_count": validation.get("frame_count", marker["frame_count"]),
+            "states": timing["states"],
+            "state_frame_counts": timing["state_frame_counts"],
+            "timing_warnings": validation.get("timing_warnings", []),
+            "warnings": validation.get("warnings", []),
+            "validated_at": utc_now(),
+            "manifest_id": manifest.get("id"),
+            **({
+                "generator": source_metadata.get("generator"),
+                "provenance": source_metadata.get("provenance"),
+                "skill_helper": "agent-pet-maker",
+                "preview_only": False,
+            } if source_metadata is not None else {}),
+        })
+        return validation
+    except BaseException:
+        write_json_atomic(validation_path, {
+            **marker, "ok": False,
+            "skipped": "PetCore validation did not complete; this source is not ready.",
+        })
+        raise
+
+
+def validate_source(args: argparse.Namespace) -> dict[str, Any]:
+    source_dir = Path(args.source).expanduser().resolve()
+    manifest = read_json(source_dir / "manifest.json", "manifest.json")
+    timing = manifest_timing_contract(manifest)
+    # An inherited baseline marker must not survive failed production checks.
+    write_json_atomic(source_dir / "build/validation.json", {
+        "schema_version": VALIDATION_SCHEMA, "ok": False,
+        "validator": "agent-pet-maker", "states": timing["states"],
+        "state_frame_counts": timing["state_frame_counts"],
+        "skipped": "Production and PetCore validation are pending.",
+    })
+    cli = locate_cli(args.cli)
+    production = run_production_verification(
+        cli, source_dir, Path(args.report).expanduser().resolve(),
+        Path(args.review).expanduser().resolve(),
+        Path(args.baseline).expanduser().resolve() if args.baseline else None,
+    )
+    if production["usable"] is not True:
+        raise MakerError("production_validation_failed", "Every production readiness check must pass before source validation")
+    validation = validate_source_with_cli(
+        cli, source_dir, manifest, timing,
+        read_json(source_dir / "source/source.json", "source metadata"),
+    )
+    return {
+        "schema_version": HELPER_SCHEMA, "ok": True, "status": "completed",
+        "capability": "source-validation", "validation": validation,
+    }
+
+
 def production_verify(args: argparse.Namespace) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve() if args.workspace else None
     if workspace is not None:
@@ -3686,53 +3828,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     validate_text_metadata(source_dir, manifest, state_counts, source_metadata)
     validate_session(source_dir)
 
-    validation_path = source_dir / "build" / "validation.json"
-    write_json_atomic(
-        validation_path,
-        {
-            "schema_version": VALIDATION_SCHEMA,
-            "ok": True,
-            "validator": "agent-pet-maker",
-            "frame_count": sum(timing["state_frame_counts"].values()),
-            "states": timing["states"],
-            "state_frame_counts": timing["state_frame_counts"],
-            "skipped": "Temporary workspace artifact; PetCore validation is pending.",
-        },
-    )
-    try:
-        validation = run_cli(cli, ["petpack", "validate", str(source_dir)], "validation_failed")
-    except MakerError as error:
-        write_json_atomic(
-            validation_path,
-            {
-                "schema_version": VALIDATION_SCHEMA,
-                "ok": True,
-                "validator": "agent-pet-maker",
-                "frame_count": sum(timing["state_frame_counts"].values()),
-                "states": timing["states"],
-                "state_frame_counts": timing["state_frame_counts"],
-                "skipped": f"PetCore validation failed ({error.code}); this workspace is not a completed package.",
-            },
-        )
-        raise
-
-    final_validation = {
-        "schema_version": VALIDATION_SCHEMA,
-        "ok": True,
-        "validator": "petcore-cli",
-        "frame_count": validation.get("frame_count"),
-        "states": validation.get("states", timing["states"]),
-        "state_frame_counts": timing["state_frame_counts"],
-        "timing_warnings": validation.get("timing_warnings", []),
-        "warnings": validation.get("warnings", []),
-        "validated_at": utc_now(),
-        "manifest_id": manifest.get("id"),
-        "generator": source_metadata.get("generator"),
-        "provenance": source_metadata.get("provenance"),
-        "skill_helper": "agent-pet-maker",
-        "preview_only": False,
-    }
-    write_json_atomic(validation_path, final_validation)
+    validation = validate_source_with_cli(cli, source_dir, manifest, timing, source_metadata)
     append_session_event(
         source_dir,
         {
@@ -4091,12 +4187,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     motion_qa_parser = subparsers.add_parser(
         "motion-qa",
-        help="Render in-app-size motion previews and deterministic review targets",
+        help="Render exact-runtime-size motion previews and deterministic review targets",
     )
     motion_qa_parser.add_argument("--workspace")
     motion_qa_parser.add_argument("--source")
     motion_qa_parser.add_argument("--output-dir")
     motion_qa_parser.add_argument("--state", action="append", choices=STATES)
+    motion_qa_parser.add_argument("--baseline", help="Validated baseline source directory for a final Studio edit QA")
 
     motion_review_parser = subparsers.add_parser(
         "motion-review",
@@ -4133,6 +4230,14 @@ def build_parser() -> argparse.ArgumentParser:
     motion_align_parser.add_argument("--plan", required=True)
     motion_align_parser.add_argument("--output-dir", required=True)
     motion_align_parser.add_argument("--report")
+
+    source_validate_parser = subparsers.add_parser(
+        "validate-source", help="Verify production and safely finalize the source validation marker"
+    )
+    for option in ("source", "report", "review"):
+        source_validate_parser.add_argument(f"--{option}", required=True)
+    source_validate_parser.add_argument("--baseline")
+    source_validate_parser.add_argument("--cli")
 
     production_verify_parser = subparsers.add_parser(
         "production-verify",
@@ -4214,6 +4319,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = motion_lock(args)
         elif args.command == "production-verify":
             result = production_verify(args)
+        elif args.command == "validate-source":
+            result = validate_source(args)
         elif args.command == "finalize":
             result = finalize(args)
         elif args.command == "install":

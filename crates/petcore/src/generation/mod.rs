@@ -1,3 +1,4 @@
+mod evidence;
 pub(crate) mod messages;
 mod visual_qa;
 
@@ -4348,7 +4349,9 @@ fn validate_skill_source_identity(source_dir: &Path) -> Result<()> {
                 &review,
                 baseline_dir.as_deref(),
             ) {
-                Ok(_) => return Ok(()),
+                Ok(verification) if verification.ok && verification.usable => return Ok(()),
+                Ok(_) => evidence_errors
+                    .push("production verification did not pass every readiness check".to_string()),
                 Err(error) => evidence_errors.push(error.to_string()),
             }
         }
@@ -5563,14 +5566,45 @@ mod tests {
             .iter()
             .map(|state| state.as_str())
             .collect::<Vec<_>>();
+        let mut attempts = Vec::new();
+        for object in std::iter::once("base").chain(REQUIRED_STATES.iter().map(|s| s.as_str())) {
+            let source = format!("fixture-{object}.png");
+            fs::copy(
+                source_dir.join("assets/frames/idle/0000.png"),
+                job_dir.join(&source),
+            )
+            .unwrap();
+            let prompt = format!("fixture-{object}.txt");
+            fs::write(
+                job_dir.join(&prompt),
+                b"Synthetic test fixture; no provider call was executed.",
+            )
+            .unwrap();
+            attempts.push(json!({"call_id": format!("fixture-{object}"), "object": object,
+                "provider": "other", "mode": "native_alpha", "outcome": "accepted",
+                "reason": "Synthetic fixture has transparent margins and a visible subject.",
+                "source": source, "source_sha256": hex::encode(Sha256::digest(fs::read(job_dir.join(&source)).unwrap())),
+                "prompt": prompt, "prompt_sha256": hex::encode(Sha256::digest(fs::read(job_dir.join(&prompt)).unwrap()))}));
+        }
+        fs::write(
+            job_dir.join("generation-evidence.json"),
+            serde_json::to_vec(&json!({
+                "schema_version": "apc.pet-generation-evidence.v1", "attempts": attempts,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let generation_digest = evidence::verify(job_dir, &audited_states).unwrap();
         let report = json!({
             "schema_version": MOTION_QA_SCHEMA,
+            "generation_evidence_sha256": generation_digest,
             "timing_digest": timing_digest,
             "audited_states": audited_states,
             "frame_set_digest": frame_set_digest,
             "keyframes": "keyframes.png",
             "presence_preview": {
                 "path": "previews/presence-preview.webp",
+                "mode": "creation_overview",
                 "duration_ms": 10_050,
                 "minimum_duration_ms": 8_000,
                 "maximum_duration_ms": 12_000,
@@ -5922,6 +5956,29 @@ mod tests {
         assert!(!stale_verification.ok);
         assert!(!stale_verification.usable);
 
+        fs::create_dir_all(source_dir.join("source")).unwrap();
+        fs::write(
+            source_dir.join("source/source.json"),
+            serde_json::to_vec(&json!({
+                "generator": "codex-app-server-skill", "provenance": "skill-full-source",
+                "preview_only": false, "visual_source": "image-generation"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let previous_external = std::env::var_os("APC_REQUIRE_EXTERNAL_SKILL_SOURCE");
+        std::env::set_var("APC_REQUIRE_EXTERNAL_SKILL_SOURCE", "1");
+        let strict_result = validate_skill_source_identity(&source_dir);
+        if let Some(value) = previous_external {
+            std::env::set_var("APC_REQUIRE_EXTERNAL_SKILL_SOURCE", value);
+        } else {
+            std::env::remove_var("APC_REQUIRE_EXTERNAL_SKILL_SOURCE");
+        }
+        assert!(strict_result
+            .unwrap_err()
+            .to_string()
+            .contains("every readiness check"));
+
         let mut changed = ImageBuffer::from_pixel(192, 208, Rgba([0, 0, 0, 0]));
         for y in 64..84 {
             for x in 52..76 {
@@ -5939,6 +5996,64 @@ mod tests {
     }
 
     #[test]
+    fn revision_presence_preserves_unchanged_legacy_timing_and_checks_authored_repeats() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = write_motion_evidence_fixture(temp.path());
+        let motion_root = temp.path().join("motion-qa");
+        let mut manifest: PetManifest =
+            serde_json::from_slice(&fs::read(source.join("manifest.json")).unwrap()).unwrap();
+        let thinking = manifest
+            .states
+            .iter_mut()
+            .find(|s| s.name == PetStateName::Thinking)
+            .unwrap();
+        thinking.frame_durations_ms = vec![125; 4];
+        thinking.playback.entry_repeat_count = Some(1);
+        let mut report: Value =
+            serde_json::from_slice(&fs::read(motion_root.join("report.json")).unwrap()).unwrap();
+        report["presence_preview"]["mode"] = json!("revision_focus");
+        report["presence_preview"]["duration_ms"] = json!(10_000);
+        report["presence_preview"]["late_motion_boundary_ms"] = json!(8_266);
+        report["presence_preview"]["sequence"] = json!([
+            {"kind":"idle_rest","state":"idle","duration_ms":1733},
+            {"kind":"action","state":"tool","repeat_count":3,"duration_ms":2400},
+            {"kind":"idle_rest","state":"idle","duration_ms":1733},
+            {"kind":"action","state":"tool","repeat_count":3,"duration_ms":2400},
+            {"kind":"idle_rest","state":"idle","duration_ms":1734}
+        ]);
+        verify_presence_preview(&source, &motion_root, &manifest, &report, &["tool"], true)
+            .unwrap();
+        report["presence_preview"]["sequence"][1]["repeat_count"] = json!(2);
+        let error =
+            verify_presence_preview(&source, &motion_root, &manifest, &report, &["tool"], true)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("authored durations and repeats"));
+    }
+
+    #[test]
+    fn production_rejects_missing_or_stale_generation_ledger() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = write_motion_evidence_fixture(temp.path());
+        let report = temp.path().join("motion-qa/report.json");
+        let review = temp.path().join("motion-review.json");
+        let ledger = temp.path().join("generation-evidence.json");
+        let bytes = fs::read(&ledger).unwrap();
+        fs::remove_file(&ledger).unwrap();
+        assert!(verify_visual_production(&source, &report, &review, None).is_err());
+        let mut changed = bytes;
+        changed.push(b' ');
+        fs::write(&ledger, changed).unwrap();
+        let error = verify_visual_production(&source, &report, &review, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("generation evidence is missing or stale"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn presence_preview_gate_rejects_short_or_stale_evidence() {
         let temp = tempfile::tempdir().unwrap();
         let source_dir = write_motion_evidence_fixture(temp.path());
@@ -5949,16 +6064,50 @@ mod tests {
         let mut report: Value = serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
 
         report["presence_preview"]["duration_ms"] = json!(999);
-        let error = verify_presence_preview(&source_dir, &motion_root, &manifest, &report)
-            .unwrap_err()
-            .to_string();
+        let error = verify_presence_preview(
+            &source_dir,
+            &motion_root,
+            &manifest,
+            &report,
+            &[
+                "idle",
+                "thinking",
+                "tool",
+                "waiting",
+                "done",
+                "failed",
+                "acknowledge",
+                "drag_left",
+                "drag_right",
+            ],
+            false,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("8–12 seconds"), "{error}");
 
         report = serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
         report["presence_preview"]["frame_set_digest"] = json!("stale");
-        let error = verify_presence_preview(&source_dir, &motion_root, &manifest, &report)
-            .unwrap_err()
-            .to_string();
+        let error = verify_presence_preview(
+            &source_dir,
+            &motion_root,
+            &manifest,
+            &report,
+            &[
+                "idle",
+                "thinking",
+                "tool",
+                "waiting",
+                "done",
+                "failed",
+                "acknowledge",
+                "drag_left",
+                "drag_right",
+            ],
+            false,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("stale"), "{error}");
     }
 

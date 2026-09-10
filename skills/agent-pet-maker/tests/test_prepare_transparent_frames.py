@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract tests for deterministic flat-chroma transparent-frame production."""
+"""Contract tests for native Alpha and flat-chroma frame production."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -81,6 +82,43 @@ class TransparentFramePipelineTests(unittest.TestCase):
             encoding="utf-8",
         )
         return jobs, report, previews, master, output
+
+    def test_replace_cannot_overwrite_any_batch_input_or_jobs(self) -> None:
+        import os
+        source_a = self.root / "source-a.png"
+        source_b = self.root / "source-b.png"
+        Image.new("RGBA", (192, 208), GREEN).save(source_a)
+        Image.new("RGBA", (192, 208), RED).save(source_b)
+        jobs, report, previews, _, _ = self.write_jobs(source_a)
+        original = json.loads(jobs.read_text())
+        original["frames"].append({"id": "idle/001", "source": str(source_b),
+            "master": str(self.root / "masters/b.png"), "output": str(self.root / "output/b.png")})
+        saved_a, saved_b = source_a.read_bytes(), source_b.read_bytes()
+        alias = self.root / "hard-link.png"
+        os.link(source_b, alias)
+        parent_alias = self.root / "parent-alias"
+        parent_alias.symlink_to(self.root, target_is_directory=True)
+        for destination in (source_b, alias, parent_alias / "source-b.png", jobs):
+            with self.subTest(destination=destination):
+                data = json.loads(json.dumps(original))
+                data["frames"][0]["master"] = str(destination)
+                jobs.write_text(json.dumps(data))
+                saved_jobs = jobs.read_bytes()
+                result = subprocess.run([sys.executable, str(PIPELINE), "--jobs", str(jobs),
+                    "--report", str(report), "--preview-dir", str(previews), "--replace"], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                if destination != jobs:
+                    self.assertIn("input", result.stdout + result.stderr)
+                self.assertEqual(source_a.read_bytes(), saved_a)
+                self.assertEqual(source_b.read_bytes(), saved_b)
+                self.assertEqual(jobs.read_bytes(), saved_jobs)
+        # The report itself is also an output and cannot overwrite the jobs input.
+        jobs.write_text(json.dumps(original))
+        saved_jobs = jobs.read_bytes()
+        result = subprocess.run([sys.executable, str(PIPELINE), "--jobs", str(jobs),
+            "--report", str(jobs), "--preview-dir", str(previews), "--replace"], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(jobs.read_bytes(), saved_jobs)
 
     def run_pipeline(
         self,
@@ -193,7 +231,7 @@ class TransparentFramePipelineTests(unittest.TestCase):
             report["frames"][0]["runtime_edge_rgb_reconstruction"]["applied"]
         )
         self.assertEqual(
-            report["frames"][0]["size_normalization"],
+            {k: report["frames"][0]["size_normalization"][k] for k in ("mode", "source_size", "target_size", "filter")},
             {
                 "mode": "exact_copy",
                 "source_size": {"width": 576, "height": 624},
@@ -252,7 +290,7 @@ class TransparentFramePipelineTests(unittest.TestCase):
                 frame = report["frames"][0]
                 self.assertEqual(frame["resize_count"], 1)
                 self.assertEqual(
-                    frame["size_normalization"],
+                    {k: frame["size_normalization"][k] for k in ("mode", "source_size", "target_size", "filter")},
                     {
                         "mode": "single_downscale",
                         "source_size": {
@@ -513,31 +551,124 @@ class TransparentFramePipelineTests(unittest.TestCase):
         self.assertEqual(report["frames"][0]["error_code"], "invalid_chroma_source")
         self.assertFalse(output.exists())
 
-    def test_rejects_upscaling_and_model_native_alpha(self) -> None:
-        small_source = self.root / "small.png"
-        Image.new("RGBA", (192, 208), GREEN).save(small_source)
-        jobs, report_path, previews, _, output = self.write_jobs(
-            small_source,
-            target_size={"width": 384, "height": 416},
-        )
-
-        completed, report = self.run_pipeline(jobs, report_path, previews)
-
-        self.assertEqual(completed.returncode, 1)
-        assert report is not None
-        self.assertEqual(report["frames"][0]["error_code"], "source_capacity_missing")
-        self.assertFalse(output.exists())
-
+    def test_chroma_mode_rejects_native_alpha(self) -> None:
         alpha_source = self.root / "native-alpha.png"
         alpha_image = Image.new("RGBA", (192, 208), GREEN)
         alpha_image.putpixel((0, 0), (0, 0, 0, 0))
         alpha_image.save(alpha_source)
         jobs, report_path, previews, _, output = self.write_jobs(alpha_source)
-        completed, report = self.run_pipeline(jobs, report_path, previews, "--replace")
+        completed, report = self.run_pipeline(jobs, report_path, previews)
         self.assertEqual(completed.returncode, 1)
         assert report is not None
         self.assertEqual(report["frames"][0]["error_code"], "invalid_chroma_source")
         self.assertFalse(output.exists())
+
+    def native_source(self, size=(192, 208)) -> Path:
+        source = self.root / "native.png"
+        image = Image.new("RGBA", size, (45, 230, 80, 0))
+        draw = ImageDraw.Draw(image)
+        w, h = size
+        draw.rectangle((w // 4, h // 4, 3 * w // 4, 3 * h // 4), fill=(220, 40, 30, 253))
+        draw.line((w // 4 - 1, h // 4, w // 4 - 1, 3 * h // 4), fill=(220, 40, 30, 60))
+        image.save(source)
+        return source
+
+    def test_native_exact_copy_preserves_hidden_rgb_and_authored_alpha(self) -> None:
+        source = self.native_source()
+        jobs, report_path, previews, master, output = self.write_jobs(
+            source, extra_frame={"source_mode": "native_alpha"})
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        for path in (master, output):
+            with Image.open(source) as original, Image.open(path) as actual:
+                self.assertEqual(original.tobytes(), actual.tobytes())
+        frame = report["frames"][0]
+        self.assertEqual(frame["source_mode"], "native_alpha")
+        self.assertEqual(frame["resize_count"], 0)
+        self.assertIsNone(frame["key"])
+        self.assertIsNone(frame["matte"])
+        self.assertFalse(frame["edge_rgb_reconstruction"]["applied"])
+        self.assertIsNone(frame["output"]["qa"]["edge_chroma_fringe"])
+        self.assertGreater(frame["output"]["qa"]["transparent_rgb_residue_pixels"], 0)
+
+    def test_native_downscale_ignores_hidden_rgb_without_edge_repair(self) -> None:
+        source = self.native_source((384, 416))
+        jobs, report_path, previews, master, output = self.write_jobs(
+            source, extra_frame={"source_mode": "native_alpha"})
+        target, parsed = PIPELINE_MODULE.parse_jobs(jobs)
+        # Fail if native pixels ever enter chroma repair or Alpha fallback code.
+        with patch.object(PIPELINE_MODULE, "estimate_key", side_effect=AssertionError), \
+             patch.object(PIPELINE_MODULE, "build_matte", side_effect=AssertionError), \
+             patch.object(PIPELINE_MODULE, "reconstruct_edge_rgb", side_effect=AssertionError), \
+             patch.object(PIPELINE_MODULE, "apply_edge_fallback", side_effect=AssertionError):
+            result = PIPELINE_MODULE.process_job(parsed[0], target, previews, 0, 0, False)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["resize_count"], 1)
+        with Image.open(master) as actual, Image.open(source) as original:
+            self.assertEqual(actual.tobytes(), original.tobytes())
+        with Image.open(output) as actual:
+            self.assertEqual(actual.size, (192, 208))
+            for r, g, b, alpha in image_values(actual):
+                if 16 <= alpha < 255:
+                    self.assertLessEqual(abs(r - 220), 1)
+                    self.assertLessEqual(abs(g - 40), 1)
+                    self.assertLessEqual(abs(b - 30), 1)
+
+    def test_native_rejects_fake_empty_and_negligible_alpha(self) -> None:
+        for kind in ("opaque_grid", "empty", "one_transparent_pixel"):
+            with self.subTest(kind=kind):
+                source = self.root / f"{kind}.png"
+                image = PIPELINE_MODULE.checkerboard((192, 208))
+                if kind == "empty":
+                    image.putalpha(0)
+                elif kind == "one_transparent_pixel":
+                    image.putpixel((0, 0), (0, 0, 0, 0))
+                image.save(source)
+                jobs, report_path, previews, _, _ = self.write_jobs(
+                    source, extra_frame={"source_mode": "native_alpha"})
+                completed, report = self.run_pipeline(jobs, report_path, previews, "--replace")
+                self.assertEqual(completed.returncode, 1)
+                self.assertFalse(report["frames"][0]["ok"])
+
+    def test_native_rejects_chroma_options_and_unknown_mode(self) -> None:
+        source = self.native_source()
+        for options in ({"source_mode": "unknown"},
+                        {"source_mode": "native_alpha", "key_color": "#00ff00"},
+                        {"source_mode": "native_alpha", "foreground_mask": str(source)}):
+            with self.subTest(options=options):
+                jobs, *_ = self.write_jobs(source, extra_frame=options)
+                with self.assertRaises(PIPELINE_MODULE.PipelineError):
+                    PIPELINE_MODULE.parse_jobs(jobs)
+        jobs, report_path, previews, _, _ = self.write_jobs(
+            source, extra_frame={"source_mode": "native_alpha"})
+        for flags in (("--edge-contract", "1"), ("--edge-feather", "0.25")):
+            completed, report = self.run_pipeline(jobs, report_path, previews, *flags, "--replace")
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(report["frames"][0]["error_code"], "invalid_native_alpha_options")
+
+    def test_native_top_level_mode_enlargement_and_crop_bounds(self) -> None:
+        source = self.native_source((384, 416))
+        jobs, report_path, previews, master, output = self.write_jobs(source)
+        value = json.loads(jobs.read_text())
+        value["source_mode"] = "native_alpha"
+        jobs.write_text(json.dumps(value))
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        value["target_size"] = {"width": 576, "height": 624}
+        jobs.write_text(json.dumps(value))
+        completed, report = self.run_pipeline(jobs, report_path, previews, "--replace")
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertTrue(report["frames"][0]["size_normalization"]["requires_detail_review"])
+        with Image.open(master) as image:
+            self.assertEqual(image.size, (384, 416))
+        with Image.open(output) as image:
+            self.assertEqual(image.size, (576, 624))
+        value["target_size"] = TARGET_LOW
+        value["frames"][0]["crop"] = {"x": 300, "y": 0, "width": 192, "height": 208}
+        jobs.write_text(json.dumps(value))
+        completed, report = self.run_pipeline(jobs, report_path, previews, "--replace")
+        self.assertEqual(completed.returncode, 1)
+        self.assertFalse(report["frames"][0]["ok"])
 
     def test_agents_cannot_override_pipeline_thresholds(self) -> None:
         source = self.root / "source.png"
@@ -556,6 +687,56 @@ class TransparentFramePipelineTests(unittest.TestCase):
         self.assertIn("unsupported keys", error["error"]["message"])
 
 
+    def test_nonmatching_source_canvas_is_fitted_without_stretching(self) -> None:
+        source = self.native_source((384, 512))
+        jobs, report_path, previews, master, output = self.write_jobs(
+            source, target_size={"width": 384, "height": 416},
+            extra_frame={"source_mode": "native_alpha"})
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        normal = report["frames"][0]["size_normalization"]
+        self.assertEqual(normal["scaled_size"], {"width": 312, "height": 416})
+        self.assertEqual(normal["offset"], {"x": 36, "y": 0})
+        with Image.open(source) as original, Image.open(master) as retained, Image.open(output) as runtime:
+            self.assertEqual(original.tobytes(), retained.tobytes())
+            self.assertEqual(runtime.size, (384, 416))
+            self.assertEqual(runtime.getpixel((0, 208))[3], 0)
+            self.assertGreater(runtime.getpixel((192, 208))[3], 240)
+
+    def test_explicit_position_and_scale_keep_complete_subject_and_alpha(self) -> None:
+        source = self.native_source((192, 208))
+        jobs, report_path, previews, master, output = self.write_jobs(
+            source, extra_frame={"source_mode": "native_alpha", "placement": {
+                "scale": 1, "x": 20, "y": 15,
+                "reason": "Correct model position while preserving authored translucent pixels."}})
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertEqual(report["frames"][0]["resize_count"], 0)
+        with Image.open(source) as original, Image.open(output) as actual:
+            self.assertEqual(actual.getpixel((68, 67)), original.getpixel((48, 52)))
+            self.assertEqual(actual.getpixel((67, 67)), original.getpixel((47, 52)))
+        value = json.loads(jobs.read_text())
+        value["frames"][0]["placement"]["x"] = 100
+        jobs.write_text(json.dumps(value))
+        before = output.read_bytes()
+        completed, report = self.run_pipeline(jobs, report_path, previews, "--replace")
+        self.assertEqual(report["frames"][0]["error_code"], "placement_clips_subject")
+        self.assertEqual(output.read_bytes(), before)
+
+    def test_placement_rejects_invalid_and_unbounded_transforms(self) -> None:
+        source = self.native_source()
+        for invalid in (True, -1, 0, float("inf"), float("nan")):
+            with self.subTest(scale=invalid):
+                jobs, *_ = self.write_jobs(source, extra_frame={"placement": {
+                    "scale": invalid, "x": 0, "y": 0,
+                    "reason": "Invalid transformation must fail before allocating output."}})
+                with self.assertRaises(PIPELINE_MODULE.PipelineError):
+                    PIPELINE_MODULE.parse_jobs(jobs)
+        with self.assertRaises(PIPELINE_MODULE.PipelineError):
+            PIPELINE_MODULE.normalize_runtime(Image.new("RGBA", (192, 208)), (192, 208),
+                                              {"scale": 1000, "x": 0, "y": 0, "reason": "Too large"})
+
+
 class SharedSkillContractTests(unittest.TestCase):
     def test_both_skills_directly_require_the_shared_pipeline(self) -> None:
         maker = (ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -569,7 +750,6 @@ class SharedSkillContractTests(unittest.TestCase):
             self.assertIn("deterministic pose guide", normalized)
             self.assertIn("deterministic size-reference image", normalized)
             self.assertIn("enumerate adjacent crops", normalized)
-            self.assertIn("0.25", normalized)
 
     def test_shared_reference_forbids_agent_specific_pixel_processing(self) -> None:
         contract = (ROOT / "references" / "transparent-frame-production.md").read_text(
@@ -577,13 +757,13 @@ class SharedSkillContractTests(unittest.TestCase):
         )
         normalized = " ".join(contract.split())
         for required in (
-            "Do not request model-native transparency",
+            "at least 3 actual native-transparency image calls for that same object",
             "Do not tune its thresholds",
             "linear-light premultiplied-Alpha",
-            "at least the runtime target",
-            "source_capacity_missing",
+            "placement_clips_subject",
             "checkerboard, white, gray, black",
             "--edge-contract 1",
+            "0.25",
             '"ok": true',
             "visible_key_pixels",
             "review evidence only",

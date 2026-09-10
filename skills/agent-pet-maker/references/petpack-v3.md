@@ -42,7 +42,7 @@ Use one tier for every runtime PNG:
 
 Every tier is 12:13. The manifest size is the exact decoded PNG size, not a
 promise about image-model output. Follow the shared visual and transparency
-contracts for source-crop capacity and the sole allowed downscale.
+contracts for quality-preserving source normalization and final-size review.
 
 ## Actions, timing, and playback
 
@@ -112,7 +112,9 @@ producer identity:
 - `source/skill_session.jsonl`: bounded `apc.pet-source-event.v1` lifecycle
   facts only.
 - `build/validation.json`: `apc.pet-validation.v1`; keep `ok:false` until every
-  required visual and PetCore gate succeeds.
+  required visual and PetCore gate succeeds. Maker `finalize` and Studio
+  `validate-source` own the temporary format marker and reset it to false on
+  validation failure; agents must not manually claim success.
 
 Use `user-reference-derived` only when supplied references materially influence
 the result. Record only package-relative reference paths.

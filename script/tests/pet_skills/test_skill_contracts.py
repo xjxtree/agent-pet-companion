@@ -214,21 +214,6 @@ class ContractSynchronizationTests(unittest.TestCase):
                 self.assertGreaterEqual(crop_w, 576)
                 self.assertGreaterEqual(crop_h, 624)
 
-        for name, entrypoint in (("maker", maker), ("studio", studio)):
-            with self.subTest(entrypoint=name):
-                normalized = " ".join(entrypoint.split())
-                self.assertIn("larger 12:13 crop", normalized)
-                self.assertIn("overflow", normalized)
-
-        normalized_visual = " ".join(visual.split())
-        for required in (
-            "source-crop capacity and subject occupancy as separate facts",
-            "sole whole-canvas downscale",
-            "provider-input-only normalized copy",
-            "not source-capacity evidence",
-        ):
-            self.assertIn(required, normalized_visual)
-
         grid_rows = re.findall(
             r"\| (\d+) \| (\d+)×(\d+) \| (\d+)×(\d+) \| "
             r"(\d+)×(\d+) \| (\d+)×(\d+) \|",

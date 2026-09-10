@@ -425,6 +425,29 @@ CREATE_MOTION_LOCK="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-lock \
   --feather-px 0)"
 assert_json "$CREATE_MOTION_LOCK" 'data["status"] == "completed" and data["capability"] == "motion-lock" and data["state"] == "idle" and data["frame_count"] == 6'
 
+record_fixture_generation() {
+  "$PET_MAKER_PYTHON" -B - "$HELPER" "$1" "$2" <<'PY_EVIDENCE'
+import argparse
+import importlib.util
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location("generation_evidence", Path(sys.argv[1]).with_name("generation_evidence.py"))
+evidence = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(evidence)
+workspace = Path(sys.argv[2])
+prompt = workspace / "fixture-generation-prompt.txt"
+prompt.write_text("Deterministic repository test fixture; no provider call was executed.")
+for object_name in sys.argv[3].split(","):
+    state = "idle" if object_name == "base" else object_name
+    source = sorted((workspace / "petpack-source/assets/frames" / state).glob("*.png"))[0]
+    evidence.record(argparse.Namespace(workspace=str(workspace), object=object_name,
+        provider="other", mode="native_alpha", call_id=f"fixture-{object_name}",
+        source=str(source), prompt_file=str(prompt), outcome="accepted",
+        reason="Repository fixture has transparent margins and a visible subject."))
+PY_EVIDENCE
+}
+record_fixture_generation "$CREATE_WORKSPACE" "base,idle,thinking,tool,waiting,done,failed,acknowledge,drag_left,drag_right"
+
 CREATE_MOTION_QA="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-qa \
   --workspace "$CREATE_WORKSPACE")"
 assert_json "$CREATE_MOTION_QA" 'data["status"] == "completed" and data["capability"] == "motion-qa" and data["audited_states"] == ["idle", "thinking", "tool", "waiting", "done", "failed", "acknowledge", "drag_left", "drag_right"]'
@@ -441,6 +464,13 @@ CREATE_MOTION_REVIEW="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-review \
   --state-note "drag_left=Fixture left drag cadence is directional and loops without a seam pop." \
   --state-note "drag_right=Fixture right drag cadence is directional and loops without a seam pop.")"
 assert_json "$CREATE_MOTION_REVIEW" 'data["status"] == "completed" and data["capability"] == "motion-review" and len(data["audited_states"]) == 9'
+
+STUDIO_SOURCE_VALIDATION="$("$PET_MAKER_PYTHON" -B "$HELPER" validate-source \
+  --source "$CREATE_WORKSPACE/petpack-source" \
+  --report "$CREATE_WORKSPACE/.agent-pet-maker/motion-qa/report.json" \
+  --review "$CREATE_WORKSPACE/.agent-pet-maker/motion-review.json" \
+  --cli "$CLI")"
+assert_json "$STUDIO_SOURCE_VALIDATION" 'data["ok"] is True and data["validation"]["ok"] is True'
 
 CREATE_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
   --operation create \
@@ -603,6 +633,8 @@ with session.open("a", encoding="utf-8") as handle:
     )
 PY
 
+record_fixture_generation "$MODIFY_WORKSPACE" "tool"
+
 MODIFY_MOTION_QA="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-qa \
   --workspace "$MODIFY_WORKSPACE")"
 assert_json "$MODIFY_MOTION_QA" 'data["status"] == "completed" and data["audited_states"] == ["tool"]'
@@ -611,6 +643,24 @@ MODIFY_MOTION_REVIEW="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-review \
   --workspace "$MODIFY_WORKSPACE" \
   --state-note "tool=Revised tool motion preserves the body anchor and keeps the prop continuous.")"
 assert_json "$MODIFY_MOTION_REVIEW" 'data["status"] == "completed" and data["audited_states"] == ["tool"]'
+
+# Exercise the standalone Studio edit flow with exactly the changed action.
+STUDIO_MODIFY_QA="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-qa \
+  --source "$MODIFY_WORKSPACE/petpack-source" \
+  --baseline "$CREATE_WORKSPACE/petpack-source" \
+  --output-dir "$MODIFY_WORKSPACE/studio-motion-qa")"
+assert_json "$STUDIO_MODIFY_QA" 'data["ok"] is True and data["audited_states"] == ["tool"]'
+"$PET_MAKER_PYTHON" -B "$HELPER" motion-review \
+  --report "$MODIFY_WORKSPACE/studio-motion-qa/report.json" \
+  --output "$MODIFY_WORKSPACE/studio-motion-review.json" \
+  --state-note "tool=Revised fixture motion keeps its authored timing and continuous prop." >/dev/null
+STUDIO_MODIFY_VALIDATION="$("$PET_MAKER_PYTHON" -B "$HELPER" validate-source \
+  --source "$MODIFY_WORKSPACE/petpack-source" \
+  --baseline "$CREATE_WORKSPACE/petpack-source" \
+  --report "$MODIFY_WORKSPACE/studio-motion-qa/report.json" \
+  --review "$MODIFY_WORKSPACE/studio-motion-review.json" \
+  --cli "$CLI")"
+assert_json "$STUDIO_MODIFY_VALIDATION" 'data["ok"] is True and data["validation"]["ok"] is True'
 
 MODIFY_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
   --operation modify \

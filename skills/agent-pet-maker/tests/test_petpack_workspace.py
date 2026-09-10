@@ -1268,7 +1268,112 @@ class MotionQualityTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        prompt = workspace / "fixture-prompt.txt"
+        prompt.write_text("Synthetic test fixture; no provider call was executed.")
+        for object_name in ("base", *workspace_helper.STATES):
+            workspace_helper.generation_evidence.record(workspace_helper.argparse.Namespace(
+                workspace=str(workspace), object=object_name, provider="other", mode="native_alpha",
+                call_id=f"fixture-{object_name}", source=str(source / "assets/frames/idle/frame-000.png"),
+                prompt_file=str(prompt), outcome="accepted", reason="Synthetic fixture has transparent margins and a visible subject.",
+            ))
         return workspace, source
+
+    def test_runtime_preview_preserves_straight_alpha_at_all_tiers(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for width, height in ((192, 208), (384, 416), (576, 624)):
+                source = root / f"{width}.png"
+                frame = Image.new("RGBA", (width, height), (80, 20, 10, 0))
+                frame.putpixel((width // 2, height // 2), (255, 255, 255, 128))
+                frame.save(source)
+                decoded = workspace_helper.normalized_motion_frame(source)
+                self.assertEqual(decoded.size, (width, height))
+                self.assertEqual(decoded.tobytes(), frame.tobytes())
+                second = decoded.copy()
+                second.putpixel((width // 2 + 1, height // 2), (255, 255, 255, 128))
+                output = root / f"{width}.webp"
+                workspace_helper.save_motion_preview(output, [decoded, second], [120, 180])
+                with Image.open(output) as preview:
+                    actual = preview.convert("RGBA")
+                    self.assertEqual(actual.size, (width, height))
+                    self.assertEqual(actual.getpixel((width // 2, height // 2)), (255, 255, 255, 128))
+                    white = Image.new("RGBA", actual.size, "white")
+                    white.alpha_composite(actual)
+                    self.assertEqual(white.getpixel((width // 2, height // 2)), (255, 255, 255, 255))
+
+    def test_studio_subset_qa_preserves_unchanged_legacy_timing(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            manifest_path = source / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            next(s for s in manifest["states"] if s["name"] == "thinking")["frame_durations_ms"] = [50] * 10
+            manifest_path.write_text(json.dumps(manifest))
+            baseline = workspace / "base-petpack-source"
+            shutil.copytree(source, baseline)
+            frame_path = source / "assets/frames/tool/frame-000.png"
+            with Image.open(frame_path) as frame:
+                changed = frame.convert("RGBA")
+            changed.putpixel((96, 104), (225, 100, 50, 255))
+            changed.save(frame_path)
+            arguments = workspace_helper.argparse.Namespace(workspace=None, source=str(source),
+                output_dir=str(workspace / "studio-motion-qa"), state=None, baseline=str(baseline))
+            result = workspace_helper.motion_qa(arguments)
+            report = json.loads(Path(result["report_path"]).read_text())
+            self.assertEqual(report["audited_states"], ["tool"])
+            self.assertEqual(report["presence_preview"]["mode"], "revision_focus")
+            self.assertTrue(8000 <= report["presence_preview"]["duration_ms"] <= 12000)
+            self.assertEqual(report["generation_evidence_sha256"], workspace_helper.generation_evidence.binding(workspace, ["tool"]))
+            self.assertEqual(json.loads(manifest_path.read_text()), manifest)
+            arguments.state = ["tool"]
+            with self.assertRaisesRegex(workspace_helper.MakerError, "do not combine"):
+                workspace_helper.motion_qa(arguments)
+            arguments.state = None
+            manifest["states"][0]["frame_durations_ms"][0] += 1
+            manifest_path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(workspace_helper.MakerError, "Timing changes require regenerated frames"):
+                workspace_helper.motion_qa(arguments)
+
+    def test_source_validation_clears_inherited_success_before_production_check(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            (source / "manifest.json").write_text(json.dumps(default_manifest()))
+            (source / "build").mkdir()
+            marker = source / "build/validation.json"
+            marker.write_text('{"ok":true}')
+            arguments = workspace_helper.argparse.Namespace(source=str(source),
+                report=str(source.parent / "qa.json"), review=str(source.parent / "review.json"),
+                baseline=None, cli=None)
+            with mock.patch.object(workspace_helper, "locate_cli", return_value=Path("fixture-cli")), \
+                 mock.patch.object(workspace_helper, "run_production_verification", return_value={"usable": False}), \
+                 mock.patch.object(workspace_helper, "run_cli") as run_cli:
+                with self.assertRaises(workspace_helper.MakerError):
+                    workspace_helper.validate_source(arguments)
+                run_cli.assert_not_called()
+            self.assertIs(json.loads(marker.read_text())["ok"], False)
+
+    def test_source_validation_stages_marker_and_rolls_back_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            manifest = default_manifest()
+            timing = workspace_helper.manifest_timing_contract(manifest)
+            marker = source / "build/validation.json"
+            def validate(*_):
+                self.assertIs(json.loads(marker.read_text())["ok"], True)
+                return {"ok": True, "frame_count": 50}
+            with mock.patch.object(workspace_helper, "run_cli", side_effect=validate):
+                workspace_helper.validate_source_with_cli(Path("test-cli"), source, manifest, timing)
+            self.assertEqual(json.loads(marker.read_text())["validator"], "petcore-cli")
+            for failure in (workspace_helper.MakerError("validation_failed", "fixture failure"), KeyboardInterrupt()):
+                with mock.patch.object(workspace_helper, "run_cli", side_effect=failure):
+                    with self.assertRaises(type(failure)):
+                        workspace_helper.validate_source_with_cli(Path("test-cli"), source, manifest, timing)
+                self.assertIs(json.loads(marker.read_text())["ok"], False)
+            with mock.patch.object(workspace_helper, "run_cli", return_value={"ok": False}):
+                with self.assertRaises(workspace_helper.MakerError):
+                    workspace_helper.validate_source_with_cli(Path("test-cli"), source, manifest, timing)
+            self.assertIs(json.loads(marker.read_text())["ok"], False)
 
     def test_motion_qa_writes_in_app_previews_and_bound_review(self) -> None:
         from PIL import Image
@@ -1307,7 +1412,7 @@ class MotionQualityTests(unittest.TestCase):
                 / report["states"]["idle"]["previews"]["authored_timing"]
             )
             with Image.open(preview) as decoded:
-                self.assertEqual(decoded.size, workspace_helper.MOTION_PREVIEW_SIZE)
+                self.assertEqual(decoded.size, (192, 208))
                 self.assertEqual(decoded.n_frames, 10)
             self.assertEqual(save_preview.call_args.args[2], durations)
 
@@ -1390,7 +1495,7 @@ class MotionQualityTests(unittest.TestCase):
             preview = report_path.parent / presence["path"]
             self.assertEqual(Path(qa["presence_preview_path"]), preview)
             with Image.open(preview) as decoded:
-                self.assertEqual(decoded.size, workspace_helper.MOTION_PREVIEW_SIZE)
+                self.assertEqual(decoded.size, (192, 208))
                 self.assertGreater(decoded.n_frames, 2)
 
     def test_presence_preview_rejects_under_one_second_semantic_activity_and_looping(self) -> None:
@@ -1462,14 +1567,14 @@ class MotionQualityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
             workspace, source = self.make_workspace(Path(temporary))
             state_dir = source / "assets" / "frames" / "thinking"
-            first = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
-            last = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+            first = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
+            last = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
             ImageDraw.Draw(first).ellipse(
-                (3, 8, 17, 25),
+                (18, 52, 102, 163),
                 fill=(40, 100, 160, 255),
             )
             ImageDraw.Draw(last).ellipse(
-                (14, 8, 28, 25),
+                (84, 52, 168, 163),
                 fill=(220, 100, 80, 255),
             )
             for path in state_dir.glob("*.png"):
@@ -1504,12 +1609,12 @@ class MotionQualityTests(unittest.TestCase):
             for path in state_dir.glob("*.png"):
                 path.unlink()
             for index in range(10):
-                frame = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+                frame = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
                 if index == 5:
-                    bounds = (10, 14, 22, 28)
+                    bounds = (60, 91, 132, 182)
                 else:
                     offset = index % 2
-                    bounds = (5 + offset, 7, 26 + offset, 30)
+                    bounds = (30 + offset * 6, 45, 156 + offset * 6, 195)
                 ImageDraw.Draw(frame).rounded_rectangle(
                     bounds,
                     radius=3,
@@ -1541,15 +1646,15 @@ class MotionQualityTests(unittest.TestCase):
             for path in state_dir.glob("*.png"):
                 path.unlink()
             for index in range(10):
-                frame = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+                frame = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(frame)
                 draw.rounded_rectangle(
-                    (8, 6, 31, 27),
+                    (48, 39, 191, 176),
                     radius=4,
                     fill=(70, 140, 220, 255),
                 )
                 draw.ellipse(
-                    (11 + index % 3, 11, 15 + index % 3, 15),
+                    (66 + index % 3, 71, 90 + index % 3, 97),
                     fill=(245, 210, 80, 255),
                 )
                 frame.save(state_dir / f"frame-{index:03d}.png")
@@ -1587,16 +1692,16 @@ class MotionQualityTests(unittest.TestCase):
             for path in state_dir.glob("*.png"):
                 path.unlink()
             for index in range(10):
-                frame = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                frame = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(frame)
                 draw.rounded_rectangle(
-                    (18, 10, 44, 54),
+                    (54, 32, 132, 176),
                     radius=6,
                     fill=(80, 150, 220, 255),
                 )
                 if index < 5:
                     draw.rounded_rectangle(
-                        (45, 31, 61, 39),
+                        (135, 101, 183, 127),
                         radius=4,
                         fill=(80, 150, 220, 255),
                     )
@@ -1935,7 +2040,7 @@ class MotionQualityTests(unittest.TestCase):
                     ],
                 )
             )
-            changed = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+            changed = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
             ImageDraw.Draw(changed).rectangle(
                 (2, 2, 28, 30),
                 fill=(220, 40, 80, 255),

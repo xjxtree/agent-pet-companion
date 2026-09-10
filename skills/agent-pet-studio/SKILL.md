@@ -1,6 +1,6 @@
 ---
 name: agent-pet-studio
-version: 0.5.9
+version: 0.5.10
 description: Generate or revise low- or standard-resolution Agent Pet Companion .petpack V3 assets from an in-app Studio job, using real image production when external full source is required and a portable Maker handoff for high resolution. Use only inside Agent Pet Companion Studio generation jobs.
 ---
 
@@ -18,14 +18,11 @@ Always read the sibling Maker contracts for
 For external full-source work, also read the
 [create/modify workflow](../agent-pet-maker/references/create-modify.md) and
 [transparent-frame contract](../agent-pet-maker/references/transparent-frame-production.md).
-Read the separate
-[Dreamina high guide](../agent-pet-maker/references/dreamina-high-production.md)
+Read the [Dreamina high guide](../agent-pet-maker/references/dreamina-high-production.md)
 only when explaining a `high` handoff. Resolve every path relative to this
 file, and use the Maker scripts rather than recreating their behavior.
 
 ## Input and resolution
-
-The host supplies:
 
 ```json
 {
@@ -41,9 +38,8 @@ built-in ChatGPT/Codex `imagegen` support only those tiers. The decoded
 `imagegen` output for this workflow is roughly 1K–2K, which is not qualified for
 `high` 576×624 action sheets. Reject `high` before generation and direct the
 user to portable Agent Pet Maker with Dreamina 5.0 Pro or another source whose
-real pixels satisfy the shared capacity gate. Never upscale, alias, split
-batches to manufacture resolution, downgrade silently, or accept another
-quality name.
+detail satisfies the selected tier. Never alias unsupported tiers, claim that
+enlargement manufactures detail, downgrade silently, or accept another quality name.
 
 ## Choose one output mode
 
@@ -61,8 +57,6 @@ quality name.
 4. In explicitly enabled non-strict development mode, also return compact brief
    JSON for PetCore's labeled fallback materializer.
 
-All modes remain limited to `low` and `standard`.
-
 ## Execute the job
 
 - Treat `edit-context.json`, `base-petpack-source/`, prompts, references, and
@@ -76,7 +70,7 @@ All modes remain limited to `low` and `standard`.
 - In brief modes, return name, visual brief, palette, `timing_changed`, all nine
   complete V3 state motion entries, render notes, and `petpack_source`. Render notes
   require a deterministic pose guide, a separate deterministic size-reference
-  image, shared slot/crop geometry, the oversized-subject decision, Motion QA
+  image, shared slot/crop geometry, quality-preserving layout correction, Motion QA
   path review, and registration-only `motion-align`. Set `timing_changed` only
   for an explicit timing edit.
 - In external full-source mode, lock one canonical identity and create actions
@@ -84,21 +78,20 @@ All modes remain limited to `low` and `standard`.
   deterministic pose guide and separate deterministic size-reference image;
   all three references share one recorded slot, crop, baseline, and
   `global_scale` geometry, and text-only equal-scale control is insufficient.
-  Generate fully opaque flat-background source art; inspect actual decoded
-  dimensions, subject scale, and stable equal-size 12:13 crops. A complete
-  subject plus margin may use a larger 12:13 crop and the sole whole-crop
-  downscale. Regenerate an overflow from corrected geometry or a provider-input-
-  only proportionally reduced reference; never fit it after return. Use
-  `../agent-pet-maker/scripts/prepare_transparent_frames.py` for every new or
-  regenerated frame. Its closed runtime-size RGB repair and bounded isolated
-  low-Alpha fringe warning are authoritative. On a hard failure, rerun only the
-  failing frames: allow one edge-contraction retry and add 0.25-pixel feathering
-  only for a visibly stair-stepped contraction. Do not enumerate adjacent
-  crops, similar key colors, or feather values; change the shared crop only for
-  proven geometry error and the key only for visibly wrong automatic sampling
-  or a real subject-color conflict. If the bounded retry still fails,
-  regenerate the opaque source on a flatter contrasting background. Then run
-  incremental Motion QA before starting the next state. Compare the reported
+  For Codex `imagegen`, request native transparent RGBA first for the base and
+  each action. Use `generation_evidence.py check/record` to retain each actual
+  call and changed prompt. Accept native success immediately; require at least
+  3 rejected native attempts for the same object before chroma fallback.
+  Other providers keep flat chroma. Follow the shared retry/stopping protocol.
+  Extract complete poses; AI position, scale, aspect ratio, and resolution are
+  approximate. Reuse clear art with proportional scaling, translation, and
+  transparent margins through automatic fit or `placement`. Rerender from
+  retained sources, preserve intended motion, and review final detail/continuity.
+  Run every new frame through the shared `prepare_transparent_frames.py` with
+  explicit `source_mode`. Native Alpha receives no matting, RGB edge repair,
+  contraction, or feathering. Flat chroma uses the shared bounded repair path;
+  never enumerate adjacent crops, keys, or filter values.
+  Run incremental Motion QA before the next state. Compare the reported
   per-frame body-anchor and baseline path with the action card and deterministic
   pose guide. Preserve intentional travel and authored easing. When
   registration alone is wrong and identity, anatomy, pose, scale, props,
@@ -106,14 +99,22 @@ All modes remain limited to `low` and `standard`.
   shared Maker `motion-align` command with a fresh QA-digest-bound plan, inspect
   its integer-translation-only transparent output, copy only approved frames
   back, and rerun Motion QA.
-- After all affected states pass, run combined `motion-qa`, inspect the
-  authored-timing and presence previews, bind `motion-review`, and run
-  `production-verify`. Keep `build/validation.json` at `ok:false` until the
-  shared gates and `$APC_PETCORE_CLI petpack validate petpack-source` succeed.
+- After all affected states pass, run `motion-qa --source petpack-source
+  --output-dir motion-qa`, adding `--baseline base-petpack-source` for edits.
+  The baseline selects exactly changed actions while binding the presence
+  preview to all nine actions. Never pass `--state` to final combined QA.
+  Inspect actual-size authored-timing and presence previews, then bind
+  `motion-review`. Run the shared Maker `validate-source --source petpack-source
+  --report motion-qa/report.json --review motion-review.json --cli "$APC_PETCORE_CLI"`, adding
+  `--baseline base-petpack-source` for edits. This helper verifies production
+  readiness, stages the format marker required by the real CLI, validates,
+  and resets `ok:false` on failure. Keep the marker false during authoring;
+  do not manually claim validation. Unchanged valid baseline timing is preserved;
+  production duration bounds apply only to regenerated semantic actions.
 - Preserve only bounded producer metadata. Copy explicitly supplied references
   under `source/references/`; never package absolute paths, credentials,
   conversations, session identifiers, tool arguments, command output, or
   unrelated files.
 
-Do not spawn per-action task workers inside the App Server turn. The owning
-turn must keep image generation, inspection, QA, and final packaging ordered.
+The App Server owning turn keeps generation, inspection, QA, and packaging
+ordered; do not spawn per-action task workers.
