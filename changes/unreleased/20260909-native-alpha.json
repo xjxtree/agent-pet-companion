@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Changed",
+  "scope": "maker",
+  "summary_en": "Codex Maker and Studio prefer native Alpha with verified retry evidence, allow quality-preserving scaling and canvas placement of AI artwork, retain original assessments when reusing outputs, and require consistent final-size motion and complete production validation.",
+  "summary_zh": "Codex Maker 与 Studio 优先原生 Alpha 并校验重试记录，允许以成品质量为准缩放和调整 AI 素材画布，复用素材时保留原评审，最终仍要求动作一致性与完整制作验证。"
+}

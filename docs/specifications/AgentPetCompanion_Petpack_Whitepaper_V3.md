@@ -109,45 +109,44 @@ count. Every state owns its complete authored timing.
 | `high` | 576 | 624 | High-resolution art from an externally source-capable producer; 1:1 through 288 pt at 2× |
 
 All tiers are 12:13 and their widths are multiples of 192. One package uses one
-tier for every frame. `render_size` is the exact decoded runtime PNG size and
-the minimum accepted 12:13 source crop, not a model-output instruction. A
-producer must inspect the untouched image at its actual returned dimensions and
-may crop a complete 12:13 cell at or above the target from a larger decoded
-source. Prompted dimensions and layout guides may guide composition but never
-prove output pixels. Within one state, source crop windows keep stable geometry
-and preserve authored translation and baseline rather than independently
-fitting each pose to its subject bounds.
+tier for every frame. `render_size` is the exact decoded runtime PNG size,
+not a minimum source-crop size or an image-model output instruction. Inspect
+actual source pixels and preserve complete poses. AI-generated position,
+scale, aspect ratio, and resolution are approximate; clear complete artwork
+may be proportionally scaled, translated, cropped around empty surroundings,
+and placed on a transparent target canvas. Per-frame adjustments may correct
+accidental model drift while preserving intended motion and anatomical scale.
 
-After transparent exact-tier frames exist, Motion QA reports each frame's
-Alpha-weighted body anchor and visible baseline. The producer compares that
-path with the action card and deterministic pose guide: intentional travel and
-authored easing remain untouched. When whole-subject registration is the only
-defect, a QA-digest-bound correction may translate complete transparent frames
-by integer pixels to a locked, equal-spacing, or explicit guide-derived path.
-It performs no scaling, rotation, resampling, Alpha filtering, or pose
-deformation; any lost Alpha or transparent-padding violation rejects the
-correction. Corrected frames require fresh Motion QA and visual review.
+Source processing is accepted by final visual quality. Preserve identity,
+anatomy, costume, edges, usable detail, distinct poses, and animation continuity.
+Enlargement is not automatically invalid, but does not create true detail;
+reject visible blur, pixelation, deformation, lost anatomy, or disrupted motion.
+Do not stretch body parts or turn duplicate artwork into purported new poses.
+Keep untouched sources and source-resolution transparent masters, record the
+applied transform, and rerender from them to avoid cumulative resampling loss.
 
-For model-generated multi-frame rows, Maker and Studio use one canonical
-character base plus a deterministic pose guide and a separate deterministic
-size-reference image. Both structural references come from one recorded slot,
-centered crop, safe-box, baseline, and global-scale geometry; prompted
-equal-size figures are guidance, not acceptance evidence. These workspace-only
-guides never enter the portable package.
+Maker and Studio use a canonical character base, deterministic pose guide,
+and separate size reference to communicate intent. Their recorded geometry
+is guidance, not a pixel-perfect source acceptance gate. The shared script
+applies linear-light premultiplied-Alpha proportional resizing and transparent
+canvas placement. Its explicit `placement` controls support scale and offsets;
+without them it fits and centers the complete crop. The report records the
+transform and flags enlargement for detail review. After any adjustment,
+inspect exact-tier multi-background frames and authored animation, rerun Motion
+QA, and bind a fresh review. The optional QA-bound `motion-align` helper remains
+integer-translation-only; broader scale/framing corrections use the source
+normalization pipeline.
 
-The shared Maker/Studio transparency pipeline retains that source-resolution
-transparent master and may perform one direct linear-light
-premultiplied-Alpha downscale to the runtime tier for `low`, `standard`, or
-`high`. Upscaling, super-resolution, stretching, resizing before matting,
-independent per-pose fitting, cascaded or post-process resizing, or padding a
-smaller crop into the target canvas is invalid. Package support does not claim
-that every producer can create every tier. The App's Codex-backed Studio and
-the built-in ChatGPT/Codex image path are qualified only for `low` and
-`standard`. Another producer may author `high` only when its untouched decoded
-source proves sufficient pixels for every cell; splitting a state across
-multiple batches is not a substitute for missing source capacity.
-[Validation Profiles](../development/validation.md) defines which validation
-layer covers this boundary.
+The App's Codex-backed Studio and built-in ChatGPT/Codex image path remain
+qualified for `low` and `standard`. Externally qualified producers may author
+`high` when actual visual detail and representative actions support it;
+enlarging a canvas alone does not establish that capability.
+[Validation Profiles](../development/validation.md) defines verification.
+
+所有档位仍要求精确的运行画布尺寸。源图的位置、大小、比例和分辨率不必精确符合
+提示词；允许在不影响成品质量的前提下等比缩放、平移、调整裁切和透明留白，必要时
+逐帧修正模型漂移。保留原图和处理参数，以最终清晰度、人物一致性及动画连续性验收，
+不因合理后处理本身判定失败，也不把放大后的像素尺寸当成新增细节。
 
 Display size is a separate App preference and never changes package identity or
 authored pixels. The App exposes a 100–300 pt logical-width slider; it does not
@@ -287,14 +286,25 @@ must not be used to infer runtime timing.
 - Production begins from one canonical identity lock: silhouette, face
   landmarks, anatomy and proportions, outfit and accessories, palette,
   rendering treatment, lighting, scale, baseline, crop, and camera.
-- Maker and Studio generate new rows as fully opaque art on one uniform
-  contrasting background, not model-native transparent output. Their shared
-  script owns the conservative border-connected soft matte, Alpha-boundary-only
-  RGB reconstruction, the sole optional downscale from a source crop at least
-  as large as the target, source-resolution transparent-master retention, and
-  checkerboard/white/gray/black/complementary-background QA. Agents cannot tune
-  thresholds or substitute per-run color/edge filters. An unchanged frame in
-  an edit remains byte-identical.
+- Codex built-in `imagegen` and Codex-backed Studio request native transparent
+  RGBA first for each production base and action. Before flat-chroma fallback,
+  they execute at least three native generation attempts for that same object,
+  adjusting prompts to observed failures and retaining actual call/output
+  evidence outside the package. An accepted native result ends retries early.
+  Other providers retain opaque flat-chroma production. The shared
+  [transparency contract](../../skills/agent-pet-maker/references/transparent-frame-production.md)
+  owns prompt adaptation, stopping conditions, and bounded fallback details.
+- The shared script uses explicit `native_alpha` or `flat_chroma` mode. Native
+  Alpha preserves decoded RGBA with no matting, RGB decontamination, contraction,
+  or feathering; hidden RGB under zero Alpha and near-opaque interior Alpha are
+  not automatic defects. Flat chroma uses the conservative border-connected
+  matte and Alpha-boundary RGB reconstruction. Both modes retain a source-size
+  transparent master, support quality-preserving proportional scaling and canvas
+  placement, and require structural Alpha and multi-background visual QA.
+  RGBA encoding alone cannot prove transparency or acceptable artwork. Identity,
+  action, anatomy, props, crop, continuity, and motion QA remain required.
+  Agents cannot tune thresholds or substitute per-run color/edge filters.
+  An unchanged frame in an edit remains byte-identical.
 - Each action communicates one readable intent, with deliberate spacing and
   non-uniform holds. Whole-character travel, rotation, recoil, squash/stretch,
   or scale change is valid when identity, continuity, crop, props, timing, and
@@ -304,11 +314,10 @@ must not be used to infer runtime timing.
   transformed copies, or procedural interpolation.
 - The image model does not need to return exact target dimensions. The producer
   records actual decoded dimensions, verifies exact frame count/order and
-  complete action poses, and extracts stable equal-size 12:13 source windows
-  without independently recentering subjects. The only registration exception
-  is a reviewed post-transparency integer whole-frame translation bound to
-  fresh Motion QA; it may correct model drift but never change subject scale,
-  pose, or an intentional trajectory.
+  complete action poses, and extracts complete source crops. Reviewed scale,
+  position, and transparent-canvas adjustments may correct accidental model
+  drift; preserve anatomical proportions and intentional trajectories. A fresh
+  Motion QA and visual review bind every resulting frame change.
 - Each state is normally produced in one image batch. An exceptional
   multi-batch row within a supported tier carries accepted boundary poses and
   the canonical base into the next batch and receives explicit join review. A
@@ -332,7 +341,8 @@ motion QA outside the closed package tree:
 - one runtime-size keyframe sheet;
 - one actual-duration `authored_timing` WebP for every audited state;
 - one 8–12 second `presence-preview.webp` for the final combined run, with
-  authored idle rests separating thinking, tool, and done bursts;
+  authored idle rests separating thinking, tool, and done bursts for creation,
+  or two full occurrences of one edited action separated by rests for revisions;
 - a `timing_digest` bound to the complete manifest state contracts;
 - decoded frame and frame-set digests, including a presence-preview digest bound
   to all nine actions even when a revision changes only a subset;
@@ -342,8 +352,9 @@ motion QA outside the closed package tree:
 - one concrete visual-review note per audited state, bound to the current report
   and decoded frames.
 
-Every `authored_timing` preview is inspected at the declared per-frame
-durations. Review covers identity and anatomy, state intent, trajectory, crop,
+Every `authored_timing` preview preserves straight RGBA at the exact manifest
+render size and is inspected at the declared per-frame durations. Premultiplied
+pixels are used only for hashes and metrics, never as display RGBA. Review covers identity and anatomy, state intent, trajectory, crop,
 spacing, easing, weight, props, reduced-motion choice, and the mode-specific
 loop, repeat, settle, or return. Clipped visible pixels and synthetic
 blend/interpolation are hard failures. Motion magnitude and shape metrics are
@@ -353,7 +364,10 @@ The combined presence preview is a production gate, not runtime media. It uses
 the authored frames and durations without retiming, lasts 8–12 seconds, keeps at
 least three calm idle-rest phases, and retains visible motion late enough to
 expose premature settling. Effective active playback for thinking, tool,
-waiting, done, and failed must be 1,000–3,200 ms. A semantic action that becomes
+waiting, done, and failed must be 1,000–3,200 ms for newly generated actions.
+Revisions preserve valid unchanged baseline timing; these production bounds
+apply only to regenerated semantic actions. The revision focus preview never
+retimes an unchanged action to fit its overview. A semantic action that becomes
 static in under one second or loops mechanically through the review is rejected.
 
 Any frame edit or timing-contract edit invalidates the old QA and review
@@ -361,7 +375,15 @@ evidence. Maker finalization, Studio, and strict Studio import call the same
 `petcore-cli petpack verify-production` implementation for changed-state
 derivation, timing digest, frame freshness, exact review coverage, preview
 existence, registration, interpolation, revision structure, and timing
-transitions. Ordinary archive import checks media and structure but does not
+transitions. It also verifies the workspace-only `generation-evidence.json`
+(`apc.pet-generation-evidence.v1`) and retained raw-image/prompt hashes against
+the final QA's `generation_evidence_sha256`, including per-object native retries
+and latest accepted outcomes. These are producer records, not authenticated
+provider receipts, and never enter the portable package. Strict Studio import
+requires the returned `ok` and `usable` fields to be true, including build-bound
+interaction evidence. Maker `finalize` and Studio `validate-source` stage the
+format validation marker only after production verification; real CLI failure
+resets it to false. Ordinary archive import checks media and structure but does not
 recreate or certify this artistic review.
 
 ## 7. Metadata and privacy

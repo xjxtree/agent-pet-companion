@@ -41,7 +41,7 @@ explicit supported tier or another complete valid V3 timing. Establish one
 canonical identity and action card, generate one action per batch, retain the
 untouched result, and create the action's deterministic pose guide plus
 separate deterministic size-reference image from one shared geometry record.
-Verify source capacity and subject scale, crop without resampling, and derive
+Verify source detail and subject completeness, crop without resampling, and derive
 runtime PNGs through `prepare_transparent_frames.py`.
 
 An additional batch is allowed only for a non-capacity continuity problem in an
@@ -90,7 +90,12 @@ python3 <skill-dir>/scripts/petpack_workspace.py motion-qa \
   --state idle
 ```
 
-After all states, rerun without `--state`. Inspect `keyframes.png`, every
+After all states, rerun without `--state`. The workspace baseline selects exactly
+regenerated actions for revisions. Standalone Studio uses `--source`,
+`--output-dir`, and `--baseline base-petpack-source` for edits; never combine
+`--baseline` with `--state`. Final QA requires the retained generation ledger
+from the [transparency contract](transparent-frame-production.md).
+Inspect `keyframes.png`, every
 authored-timing WebP, and `previews/presence-preview.webp`. Bind one concrete
 note per audited state:
 
@@ -102,7 +107,12 @@ python3 <skill-dir>/scripts/petpack_workspace.py motion-review \
 ```
 
 Repeat `--state-note` for every audited action. A frame or timing edit makes old
-review evidence stale.
+review evidence stale. Previews preserve straight RGBA at the exact runtime tier;
+premultiplied pixels are only a measurement/hash representation, never display
+artwork. A revision presence preview shows two occurrences of one edited action
+separated by calm rests and binds all nine actions; every edited action also
+gets its own full authored-timing preview. Unchanged baseline actions keep their
+valid timing, including timing outside current creation production bounds.
 
 Create:
 

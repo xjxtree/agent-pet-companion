@@ -40,8 +40,8 @@ Use these single-row starting layouts when their safe boxes fit the action:
 | 4 | 4096×1536 | 1024 | 1008×1092 |
 
 Each listed crop exceeds 576×624, but requested dimensions are not evidence.
-Inspect Dreamina's actual decoded output and prove every stable equal-size 12:13
-crop before accepting it.
+Inspect Dreamina's actual decoded output, extract complete poses, and verify
+adequate final detail. Source crops may differ from this suggested geometry.
 
 ```bash
 dreamina image2image \
@@ -63,12 +63,11 @@ unsupported count by adding or removing generated figures.
 
 ## Oversized-subject recovery layouts
 
-First apply the shared decision: a complete figure that fits a stable larger
-12:13 crop is normalized by the transparency script and does not need another
-paid call. If a single-row result instead crosses its recorded safe box, use a
-measured smaller `global_scale` and, when applicable, one of these verified
-multi-row alternatives. They increase real per-slot crop capacity within the
-4K canvas pixel budget; they are not permission to split an action into batches.
+First apply the shared layout correction: scale and position complete, clear
+figures on the runtime canvas before considering another paid call. Crossing
+a planned safe box is not itself failure. If the source actually clips or
+overlaps figures, adjust guide occupancy and, when useful, try these multi-row
+layouts. They provide more room within the 4K canvas pixel budget.
 
 | Frames | Grid | Request canvas | Slot size | Largest centered 12:13 crop per slot |
 | ---: | ---: | ---: | ---: | ---: |
@@ -79,7 +78,7 @@ multi-row alternatives. They increase real per-slot crop capacity within the
 Author and read these grids left to right, then top to bottom. Before the
 corrected call, regenerate both structural references at the exact new canvas
 dimensions. If the canonical identity image itself overstates occupancy, use
-the provider-input-only proportional-downscale reference procedure from the
+the normalized identity-reference option from the
 shared visual contract while preserving the untouched original as identity
 authority. Save and inspect the corrected untouched output; prompted layout,
 request dimensions, and the table above never prove returned crop capacity.
@@ -111,10 +110,9 @@ transparency work.
   separator.
 - Lock camera distance, head size, shoulder width, full-body scale, outfit, and
   materials across all poses.
-- Compare every returned figure with the recorded size-reference measurements
-  and verify it remains inside the shared safe subject box before proving the
-  table's centered 12:13 crop. A prompted canvas or apparently equal row is not
-  acceptance evidence.
+- Compare returned anatomical scale with the reference and correct accidental
+  model drift through the shared proportional placement controls. Review final
+  detail and animation; neither prompted geometry nor canvas size proves quality.
 - For jumps, apply `CRITICAL SCALE LOCK` and forbid floor, contact, cast, and
   oval shadows.
 - For walk cycles, change scripted joint coordinates when poses repeat; do not

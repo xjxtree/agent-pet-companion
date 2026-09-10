@@ -2,26 +2,26 @@
 
 ## Contents
 
-1. Source-capacity gate
+1. Runtime target and source quality
 2. Provider routing
 3. Production base and action batches
 4. Deterministic pose and size guides
 5. Reference and prompt contract
-6. Oversized-subject decision and recovery
+6. Layout correction and recovery
 7. Failure routing
 8. Runtime-size acceptance
 
-## Source-capacity gate
+## Runtime target and source quality
 
 Treat `manifest.render_size` as the exact runtime PNG target, not an image-model
-output instruction. For every frame, recover a complete decoded source crop
-that is exactly 12:13 and at least the selected target:
+output instruction. Extract each complete pose from the actual returned image;
+its source crop need not have a prescribed size or aspect ratio:
 
-| Tier | Runtime PNG | Minimum source crop |
-| --- | ---: | ---: |
-| `low` | 192×208 | 192×208 |
-| `standard` | 384×416 | 384×416 |
-| `high` | 576×624 | 576×624 |
+| Tier | Runtime PNG |
+| --- | ---: |
+| `low` | 192×208 |
+| `standard` | 384×416 |
+| `high` | 576×624 |
 
 After every image call:
 
@@ -29,18 +29,24 @@ After every image call:
    actual dimensions.
 2. Verify exact frame count/order, distinct poses, full-body completeness,
    identity, anatomy, props, camera, scale, spacing, background, and action.
-3. Record one stable equal-size source-pixel rectangle per cell. Preserve the
-   action's baseline and intended translation; never fit or recenter poses
-   independently by their subject bounds.
-4. Reject overlapping, clipped, undersized, padded, blurry pre-enlarged, or
-   already-resampled cells.
-5. Crop only, then use the shared transparency script for an exact copy or one
-   direct linear-light premultiplied-Alpha downscale.
+3. Record source-pixel rectangles containing complete poses. Equal cells are a
+   useful starting point, not a reason to clip a complete returned figure.
+4. Correct position, scale, and canvas differences when the artwork is clear
+   and complete. Regenerate overlapping/missing anatomy, identity changes, or
+   visibly inadequate detail that reasonable processing cannot fix.
+5. Use the shared transparency script for Alpha-aware proportional scaling
+   and transparent-canvas placement, with explicit per-frame adjustments when
+   needed. Prefer a common action scale; correct accidental frame drift using
+   stable anatomical landmarks rather than each pose's changing outer bounds.
 6. Inspect the exact-tier runtime sequence and run Motion QA.
 
-Never upscale, stretch, use super-resolution, resize before matting, cascade
-resizes, or place a small crop on a target-size canvas. Additional batches do
-not create missing source pixels.
+Agents may proportionally shrink or enlarge, translate, crop empty surroundings,
+and add transparent margins when final image and motion quality remain intact.
+Enlargement does not create real detail: inspect faces, costume, fine edges,
+and materials at the runtime size. Keep untouched originals and rerender from
+source-resolution masters with the combined transform instead of accumulating
+resampling loss. Do not stretch anatomy, conceal clipping, or use transforms
+to manufacture missing distinct poses. Processing is not itself a defect.
 
 ## Provider routing
 
@@ -50,10 +56,10 @@ Choose the tier first, then a provider whose real decoded pixels can satisfy it:
 | --- | --- | --- |
 | ChatGPT/Codex built-in `imagegen` | `low`, `standard` | Its approximate 1K–2K decoded output envelope is not qualified for `high`. |
 | Dreamina 5.0 Pro | `low`, `standard`, `high` | For `high`, follow `dreamina-high-production.md` and verify the returned pixels. |
-| Another provider or user artwork | Any tier proven by its pixels | Apply the same capacity, transparency, motion, and final gates. |
+| Another provider or user artwork | Any tier supported by its visual detail | Apply the same transparency, motion, and final-quality checks. |
 
 Do not repeatedly attempt built-in `imagegen` for `high`, combine separate
-outputs, or silently downgrade. If no qualified source is available, stop
+outputs to claim unproven detail, or silently downgrade. If no qualified source is available, stop
 before a paid call or ask the user to select a lower tier.
 
 ## Production base and action batches
@@ -66,8 +72,8 @@ image-to-image action.
 
 Generate one action per call and normally keep all 4–8 ordered poses in one
 batch. Use one action card that states the intent, exact frame count, the
-geometry sidecar's reading order, playback outcome, safe margins, and flat-
-background rules. Immediately inspect the result before another call.
+geometry sidecar's reading order, playback outcome, safe margins, and selected
+Alpha/background rules. Immediately inspect the result before another call.
 
 Every multi-frame action uses two script-generated structural references: a
 frameless pose guide as reference image 2 and a separate frameless size-
@@ -77,8 +83,10 @@ windows, baseline, and `global_scale`. Text-only requests for equal-sized
 figures are not scale evidence. If the active provider cannot accept the
 character base and both structural references in one request, choose a
 compatible provider or a supported lower tier instead of dropping the size
-reference. If the same defect appears twice, change the guides or redesign the
-action instead of extending the same prompt.
+reference. Use guides as generation aids, not pixel-perfect acceptance rules.
+Before spending another call, try quality-preserving correction of usable
+artwork. If a source defect recurs, change the production approach rather than
+repeating prompts that only restate exact coordinates or sizes.
 
 An exceptional multi-batch action is allowed only for a non-capacity continuity
 constraint. Carry the base and one or two accepted boundary poses into the next
@@ -138,7 +146,8 @@ match the other.
 ## Reference and prompt contract
 
 Upload the character base first, the pose guide second, and the size-reference
-image third. Include this responsibility block verbatim:
+image third. Explain their separate responsibilities; this template may be
+shortened without losing those distinctions:
 
 ```text
 Image 1 defines the exact character identity, face, hair, clothing,
@@ -169,53 +178,38 @@ Every action prompt must also require:
 - the recorded full-body pixel height, head size, shoulder width, baseline, and
   safe crop occupancy from the size-reference image;
 - no touching, overlap, or cropped hair, appendages, hands, feet, or heels;
-- a perfectly uniform textureless solid background with no floor, shadow,
-  reflection, text, border, or floating effect;
+- actual transparent empty margins for native Alpha, or a perfectly uniform
+  textureless solid background for flat chroma; neither mode may add a floor,
+  shadow, reflection, text, border, or floating effect;
 - `CRITICAL SCALE LOCK` for jumps or other scale-sensitive motion;
 - `contact -> settle -> passing -> advance` with alternating limbs for a walk;
 - correctly connected feet and heels in every relevant pose.
 
-Choose the output chroma background by the transparency contract. The guide's
+Choose native Alpha or the output chroma background by the transparency contract. The guide's
 magenta canvas is structural input, not an instruction to copy its color.
 
-## Oversized-subject decision and recovery
+## Layout correction and recovery
 
-Treat source-crop capacity and subject occupancy as separate facts. Measure the
-untouched decoded output before transparency or any resize, including hair,
-ears or earrings, fingers, garment edges, props or effects, and feet or heels.
+Inspect the untouched image before rejecting a model's placement. A figure
+outside the planned safe box may still be complete in the source. Extract the
+whole figure, preserve its source-resolution transparent master, and use the
+shared script's `placement` to set proportional scale and pixel offsets on the
+runtime canvas. Empty padding and differing source crop ratios are acceptable.
 
-1. If every complete subject plus exterior blank margin fits the recorded
-   stable equal-size 12:13 crop, and that crop is at least the runtime target,
-   accept the source even when its figure is much larger than the runtime pet.
-   Crop without resampling and let the shared transparency script perform the
-   sole whole-canvas downscale. This preserves the subject-to-canvas ratio and
-   is the normal supported path, not a scale repair.
-2. If any complete subject crosses the safe subject box, touches the crop, or
-   is already clipped, reject the output. Do not choose a tighter or shifted
-   per-frame crop, shrink or recenter the returned figure, expand the cell with
-   padding, or treat a post-fit frame as source evidence.
-3. Correct the generation inputs as one action-wide geometry change. Prefer a
-   sheet orientation or grid with larger equal slots when the provider's real
-   canvas limits allow it, and/or reduce `global_scale` once. Regenerate the
-   pose guide and size-reference image together from the revised sidecar, keep
-   the same authored frame count and order, and make one corrected call.
-4. When the canonical identity reference itself fills most of its image and
-   keeps biasing the provider toward an oversized subject, retain that original
-   as the identity acceptance authority and create a provider-input-only
-   normalized copy. Crop one rectangle containing every visible defining
-   feature and garment edge, proportionally downscale the entire rectangle
-   once, and place it on a larger flat input canvas aligned to the recorded
-   safe box. Never enlarge, warp, mask, restyle, or independently alter body
-   parts. Use the normalized copy only for the corrected generation call; it
-   is not source-capacity evidence, generated source art, or a package frame.
-5. Reinspect the corrected untouched output against the sidecar measurements.
-   If the same occupancy defect remains, change the sheet topology, provider,
-   or action design instead of searching smaller scales or post-processing the
-   returned subjects.
+Compare face/head size, shoulders, torso, and costume across actions. A squat
+should become shorter through joint motion, not an accidental camera zoom.
+Use a common anatomical scale and intentional baseline/anchor path; per-frame
+corrections may remove accidental size or position drift. Never blindly fit
+each silhouette to an identical bounding box, since raised hands, bending,
+and intentional travel change that box. Record the reason and transform, inspect
+all backgrounds and the authored animation, then rerun Motion QA.
 
-The permission to proportionally downscale a provider input reference does not
-change runtime normalization: output frames still permit only an exact copy or
-one whole-crop linear-light premultiplied-Alpha downscale in the shared script.
+If the source itself loses anatomy, merges adjacent figures, changes identity,
+or cannot retain adequate runtime detail, regenerate the affected action.
+Adjust the guides, composition, provider-input scale, or action design based on
+the observed defect. A normalized identity reference is a generation aid;
+retain the original as the identity authority. Do not spend repeated calls
+trying to obtain exact output coordinates that ordinary processing can fix.
 
 ## Failure routing
 
@@ -225,8 +219,8 @@ one whole-crop linear-light premultiplied-Alpha downscale in the shared script.
   solid background`.
 - Copied guide figures: require complete replacement and forbid retained guide
   pixels.
-- Scale drift or oversized figures: follow the oversized-subject decision and
-  recovery above; never fit cells independently.
+- Scale drift or oversized figures: follow layout correction above; review
+  anatomical scale and motion after processing.
 - Pose/size disagreement: repair the shared sidecar and regenerate both guides;
   never resize or reposition one reference independently.
 - Whole-subject registration drift: compare Motion QA's per-frame body-anchor
@@ -234,9 +228,10 @@ one whole-crop linear-light premultiplied-Alpha downscale in the shared script.
   intentional travel and easing. If registration is the only defect, first use
   one QA-bound `motion-align` pass on the transparent exact-tier frames; choose
   a locked, equal-spacing linear, or explicit guide-target path per axis. The
-  pass may translate whole frames by integer pixels only and must be inspected
-  and rerun through Motion QA. Regenerate when translation would clip Alpha or
-  conceal any identity, anatomy, pose, scale, prop, crop, or continuity defect.
+  `motion-align` pass translates whole frames by integer pixels only and must
+  be inspected and rerun through Motion QA. For scale or framing corrections,
+  rerender from the source master using the transparency script's `placement`.
+  Regenerate defects that these adjustments cannot repair at acceptable quality.
 - Jump shadows: forbid floor, cast, contact, and oval shadows explicitly.
 - Repeated walk poses: revise scripted joint coordinates instead of stacking
   prompt variants.

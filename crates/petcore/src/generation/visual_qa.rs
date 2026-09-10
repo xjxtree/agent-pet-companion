@@ -194,6 +194,8 @@ pub(super) fn verify_presence_preview(
     motion_root: &Path,
     manifest: &PetManifest,
     report: &Value,
+    required_states: &[&str],
+    revision: bool,
 ) -> Result<()> {
     let presence = report
         .get("presence_preview")
@@ -204,6 +206,16 @@ pub(super) fn verify_presence_preview(
                     .to_string(),
             )
         })?;
+    let expected_mode = if revision {
+        "revision_focus"
+    } else {
+        "creation_overview"
+    };
+    if presence.get("mode").and_then(Value::as_str) != Some(expected_mode) {
+        return Err(PetCoreError::Validation(
+            "presence preview mode does not match create or baseline-bound revision".to_string(),
+        ));
+    }
     let path = presence
         .get("path")
         .and_then(Value::as_str)
@@ -285,7 +297,30 @@ pub(super) fn verify_presence_preview(
                 )
             })?;
         match segment.get("kind").and_then(Value::as_str) {
-            Some("action") => {}
+            Some("action") => {
+                let state_name = segment
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let state = manifest
+                    .states
+                    .iter()
+                    .find(|s| s.name.as_str() == state_name)
+                    .ok_or_else(|| {
+                        PetCoreError::Validation(
+                            "presence preview has an unknown action".to_string(),
+                        )
+                    })?;
+                let repeats = u64::from(state.playback.entry_repeat_count.unwrap_or(1));
+                let authored: u64 = state.frame_durations_ms.iter().map(|d| u64::from(*d)).sum();
+                if segment.get("repeat_count").and_then(Value::as_u64) != Some(repeats)
+                    || segment_duration_ms != authored * repeats
+                {
+                    return Err(PetCoreError::Validation(
+                        "presence preview must preserve authored durations and repeats".to_string(),
+                    ));
+                }
+            }
             Some("idle_rest") if segment.get("state").and_then(Value::as_str) == Some("idle") => {
                 observed_rest_count += 1;
             }
@@ -303,7 +338,28 @@ pub(super) fn verify_presence_preview(
                 .to_string(),
         ));
     }
-    for required_action in ["idle", "thinking", "tool", "done"] {
+    let focus = required_states.first().copied().unwrap_or("idle");
+    let required_actions = if revision {
+        vec![focus]
+    } else {
+        vec!["idle", "thinking", "tool", "done"]
+    };
+    if revision
+        && (sequence.len() != 5
+            || sequence.iter().enumerate().any(|(index, segment)| {
+                if index % 2 == 0 {
+                    segment.get("kind").and_then(Value::as_str) != Some("idle_rest")
+                } else {
+                    segment.get("kind").and_then(Value::as_str) != Some("action")
+                        || segment.get("state").and_then(Value::as_str) != Some(focus)
+                }
+            }))
+    {
+        return Err(PetCoreError::Validation(
+            "revision presence preview must show two edited-action occurrences separated by calm rests".to_string(),
+        ));
+    }
+    for required_action in required_actions {
         if !sequence.iter().any(|segment| {
             segment.get("kind").and_then(Value::as_str) == Some("action")
                 && segment.get("state").and_then(Value::as_str) == Some(required_action)
@@ -321,6 +377,9 @@ pub(super) fn verify_presence_preview(
         PetStateName::Done,
         PetStateName::Failed,
     ] {
+        if !required_states.contains(&semantic_name.as_str()) {
+            continue;
+        }
         let state = manifest
             .states
             .iter()
@@ -463,6 +522,24 @@ fn verify_visual_production_dir(
         )));
     }
 
+    let mut generation_objects = required.clone();
+    if baseline_dir.is_none() {
+        generation_objects.insert(0, "base");
+    }
+    let workspace = source_dir
+        .parent()
+        .ok_or_else(|| PetCoreError::Validation("source has no workspace".to_string()))?;
+    let generation_digest = evidence::verify(workspace, &generation_objects)?;
+    if report
+        .get("generation_evidence_sha256")
+        .and_then(Value::as_str)
+        != Some(generation_digest.as_str())
+    {
+        return Err(PetCoreError::Validation(
+            "motion QA generation evidence is missing or stale".to_string(),
+        ));
+    }
+
     let timing_digest = hex::encode(Sha256::digest(serde_json::to_vec(&manifest.states)?));
     if report.get("timing_digest").and_then(Value::as_str) != Some(timing_digest.as_str()) {
         return Err(PetCoreError::Validation(
@@ -573,7 +650,14 @@ fn verify_visual_production_dir(
             "visual production motion evidence has a stale frame-set digest".to_string(),
         ));
     }
-    verify_presence_preview(source_dir, motion_root, &manifest, &report)?;
+    verify_presence_preview(
+        source_dir,
+        motion_root,
+        &manifest,
+        &report,
+        &required,
+        baseline_dir.is_some(),
+    )?;
     validate_visual_frame_diversity(source_dir, &required)?;
     let visual_ok = true;
 

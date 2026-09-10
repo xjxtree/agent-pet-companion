@@ -69,6 +69,10 @@ During the initial migration, reversible repository settings may be applied firs
 
 Branch/worktree ownership and direct/train PR coordination are defined by [Parallel development](parallel-development.md). / 分支、worktree 所有权及 direct/train PR 协调见并行开发文档。
 
+## Pet production checks / 宠物制作验证
+
+`validate_portable_pet_maker.sh` exercises create/revision packaging and the standalone Studio `validate-source` flow against the real CLI in an isolated fixture runtime. Python tests cover native Alpha retention, exact-tier straight-RGBA previews, batch input alias protection, and per-object generation retry records. PetCore tests recheck generation artifact hashes, changed-state coverage, baseline timing preservation, and strict import readiness. Fixture records explicitly identify synthetic test data and are not evidence of real image-provider calls or artistic acceptance. / `validate_portable_pet_maker.sh` 在隔离夹具运行时中使用真实 CLI 验证新建、修订打包及 Studio 独立 `validate-source` 流程。Python 测试覆盖原生 Alpha 保留、精确运行尺寸的直通 RGBA 预览、批任务输入别名保护和逐对象重试记录；PetCore 测试复核生成素材哈希、修改动作覆盖、基准时长保留和严格导入就绪状态。夹具记录明确标识为合成测试数据，不能证明真实图像服务调用或艺术验收。
+
 ## Environment-dependent gates / 环境门禁
 
 - `APC_VALIDATE_HOST_UI=1` permits repository validators that affect a packaged App runtime. It does not itself invoke Computer Use.
@@ -98,9 +102,9 @@ Report an unavailable environment gate as skipped, never passed. / 环境不具�
 
 ## Producer capability boundary / 制作能力边界
 
-V3 runtime accepts `low` 192×208, `standard` 384×416, and `high` 576×624. A producer qualifies for a tier only when every untouched decoded 12:13 source crop meets or exceeds that tier before the one permitted downscale. Prompted dimensions, upscaling, padding, super-resolution, or extra batches do not establish source capacity.
+V3 runtime accepts `low` 192×208, `standard` 384×416, and `high` 576×624. These are output sizes, not minimum source-crop dimensions. The shared pipeline permits proportional scaling, translation, complete-pose crops, and transparent-canvas adjustments; reports retain originals and explicit transforms. Verify detail, anatomy, identity, edges, and authored motion at the final tier, including any enlargement. / 档位限定最终运行尺寸，不要求源图精确匹配。允许以成品质量为准进行缩放、定位、裁切和透明留白调整，保留原图与参数；放大也须检查最终细节，不能仅凭输出像素数证明质量。
 
-The App's Codex-backed Studio and the built-in ChatGPT/Codex image path are qualified for `low` and `standard`, not `high`. Another workflow may produce `high` only after its actual decoded source passes the repository's capacity and representative-action checks. The [V3 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) owns the normative package rule; transient measurements belong in CI or task evidence. / App 内 Studio 与内置生图只支持标清和标准；高清必须由真实来源像素满足要求的外部流程制作。实验数据不写入长期文档。
+The App's Codex-backed Studio and the built-in ChatGPT/Codex image path are qualified for `low` and `standard`, not `high`. Another workflow may produce `high` only after its actual artwork passes the repository's final-detail and representative-action checks. The [V3 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) owns the normative package rule; transient measurements belong in CI or task evidence. / App 内 Studio 与内置生图只支持标清和标准；高清必须由最终细节和代表性动作满足要求的外部流程制作。实验数据不写入长期文档。
 
 ## Release boundary / 发布边界
 

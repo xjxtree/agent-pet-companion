@@ -50,6 +50,31 @@ def markdown_links(path: Path) -> list[Path]:
 
 
 class SkillStructureTests(unittest.TestCase):
+    def test_embedded_maker_inventories_cover_source_files_and_build_inputs(self) -> None:
+        expected = {
+            path.relative_to(MAKER).as_posix()
+            for path in MAKER.rglob("*")
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix not in {".pyc", ".pyo"}
+        }
+        for relative in (
+            "crates/petcore/src/portable_skill.rs",
+            "crates/petcore/src/connections/manager.rs",
+        ):
+            source = (REPOSITORY / relative).read_text(encoding="utf-8")
+            embedded = set(
+                re.findall(
+                    r'include_str!\(\s*"[^"]*/skills/agent-pet-maker/([^"]+)"', source
+                )
+            )
+            with self.subTest(inventory=relative):
+                self.assertEqual(embedded, expected)
+
+        build = (REPOSITORY / "crates/petcore/build.rs").read_text(encoding="utf-8")
+        inputs = set(re.findall(r'"skills/agent-pet-maker/([^"]+)"', build))
+        self.assertEqual(inputs, expected)
+
     def test_frontmatter_is_minimal_and_trigger_descriptions_are_specific(self) -> None:
         expected = {
             MAKER / "SKILL.md": "agent-pet-maker",
@@ -213,21 +238,6 @@ class ContractSynchronizationTests(unittest.TestCase):
                 self.assertEqual(crop_w * 13, crop_h * 12)
                 self.assertGreaterEqual(crop_w, 576)
                 self.assertGreaterEqual(crop_h, 624)
-
-        for name, entrypoint in (("maker", maker), ("studio", studio)):
-            with self.subTest(entrypoint=name):
-                normalized = " ".join(entrypoint.split())
-                self.assertIn("larger 12:13 crop", normalized)
-                self.assertIn("overflow", normalized)
-
-        normalized_visual = " ".join(visual.split())
-        for required in (
-            "source-crop capacity and subject occupancy as separate facts",
-            "sole whole-canvas downscale",
-            "provider-input-only normalized copy",
-            "not source-capacity evidence",
-        ):
-            self.assertIn(required, normalized_visual)
 
         grid_rows = re.findall(
             r"\| (\d+) \| (\d+)×(\d+) \| (\d+)×(\d+) \| "

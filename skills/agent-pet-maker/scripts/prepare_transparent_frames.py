@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Build exact-tier transparent pet frames from flat chroma-key source crops.
+"""Build exact-tier pet frames from native Alpha or flat chroma-key crops.
 
 The pipeline is deliberately opinionated: agents provide crop geometry and an
 optional sure-foreground mask, while matte thresholds, spatial connectivity,
 edge RGB reconstruction, alpha-aware resizing, and QA stay deterministic. A
-source crop may match or exceed any supported target tier; the pipeline never
-requires an image model to emit the target dimensions exactly and never
-upscales an undersized crop.
+source crop need not match the runtime aspect ratio or dimensions. Proportional
+scaling and placement on a transparent runtime canvas correct model layout
+variance; final visual quality, rather than source occupancy, decides acceptance.
 """
 
 from __future__ import annotations
@@ -34,7 +34,8 @@ from PIL import (
 
 JOBS_SCHEMA = "apc.transparent-frame-jobs.v1"
 REPORT_SCHEMA = "apc.transparent-frame-report.v1"
-PIPELINE_ID = "apc-spatial-chroma-matte-v3"
+PIPELINE_ID = "apc-transparent-frame-v5"
+SOURCE_MODES = ("flat_chroma", "native_alpha")
 TARGET_TIERS = {
     (192, 208): "low",
     (384, 416): "standard",
@@ -56,7 +57,7 @@ MINOR_EDGE_FRINGE_MAX_EQUIVALENT_OPAQUE_PIXELS = 0.5
 MINOR_EDGE_FRINGE_MAX_COMPONENT_PIXELS = 2
 JOB_ID = re.compile(r"^[a-z0-9][a-z0-9/_-]{0,127}$")
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
-ALLOWED_TOP_LEVEL_KEYS = {"schema_version", "target_size", "key_color", "frames"}
+ALLOWED_TOP_LEVEL_KEYS = {"schema_version", "target_size", "key_color", "frames", "source_mode"}
 ALLOWED_FRAME_KEYS = {
     "id",
     "source",
@@ -65,6 +66,8 @@ ALLOWED_FRAME_KEYS = {
     "output",
     "foreground_mask",
     "key_color",
+    "source_mode",
+    "placement",
 }
 ALLOWED_CROP_KEYS = {"x", "y", "width", "height"}
 SRGB_TO_LINEAR = tuple(
@@ -188,6 +191,9 @@ def parse_jobs(path: Path) -> tuple[tuple[int, int], list[dict[str, Any]]]:
         fail("invalid_jobs", f"jobs schema_version must be {JOBS_SCHEMA}")
     target_size = parse_target_size(root.get("target_size"))
     default_key = parse_key_color(root.get("key_color", "auto"), "key_color")
+    default_mode = root.get("source_mode", "flat_chroma")
+    if default_mode not in SOURCE_MODES:
+        fail("invalid_jobs", "source_mode must be flat_chroma or native_alpha")
     frames = root.get("frames")
     if not isinstance(frames, list) or not 1 <= len(frames) <= MAX_JOBS:
         fail("invalid_jobs", f"frames must contain 1 to {MAX_JOBS} jobs")
@@ -228,6 +234,11 @@ def parse_jobs(path: Path) -> tuple[tuple[int, int], list[dict[str, Any]]]:
         mask_value = frame.get("foreground_mask")
         mask = absolute_path(mask_value, f"frames[{index}].foreground_mask") if mask_value is not None else None
         key = parse_key_color(frame.get("key_color", default_key), f"frames[{index}].key_color")
+        source_mode = frame.get("source_mode", default_mode)
+        if source_mode not in SOURCE_MODES:
+            fail("invalid_jobs", "source_mode must be flat_chroma or native_alpha")
+        if source_mode == "native_alpha" and (mask is not None or key != "auto"):
+            fail("invalid_jobs", "native_alpha does not accept a foreground mask or chroma key")
         parsed.append(
             {
                 "id": frame_id,
@@ -237,9 +248,26 @@ def parse_jobs(path: Path) -> tuple[tuple[int, int], list[dict[str, Any]]]:
                 "output": output,
                 "foreground_mask": mask,
                 "key_color": key,
+                "source_mode": source_mode,
+                "placement": parse_placement(frame.get("placement")),
             }
         )
     return target_size, parsed
+
+
+def parse_placement(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"scale", "x", "y", "reason"}:
+        fail("invalid_jobs", "placement must contain exactly scale, x, y, and reason")
+    scale = value["scale"]
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0:
+        fail("invalid_jobs", "placement.scale must be a finite positive number")
+    if any(isinstance(value[k], bool) or not isinstance(value[k], int) or abs(value[k]) > 32768 for k in ("x", "y")):
+        fail("invalid_jobs", "placement x/y must be bounded integer pixel offsets")
+    if not isinstance(value["reason"], str) or not 12 <= len(value["reason"].strip()) <= 500:
+        fail("invalid_jobs", "placement requires a concrete review reason of 12 to 500 characters")
+    return dict(value)
 
 
 def channel_distance(color: tuple[int, int, int], key: tuple[int, int, int]) -> int:
@@ -430,8 +458,6 @@ def load_crop(
         if bounds[2] > rgba.width or bounds[3] > rgba.height:
             fail("invalid_crop", "frame crop extends outside the decoded source")
     result = rgba.crop(bounds)
-    if result.width * 13 != result.height * 12:
-        fail("invalid_crop", "frame crop must have the exact 12:13 pet canvas ratio")
     return result, bounds, decoded_size
 
 
@@ -634,10 +660,9 @@ def reconstruct_edge_rgb(
 def resize_linear_premultiplied(image: Image.Image, size: tuple[int, int]) -> Image.Image:
     if image.size == size:
         return image.copy()
-    if image.width < size[0] or image.height < size[1]:
-        fail("upscale_forbidden", "runtime frame cannot be larger than its transparent master")
-    if image.width * size[1] != image.height * size[0]:
-        fail("resize_forbidden", "transparent master and runtime target must share one aspect ratio")
+    # A common scale can round each output dimension by up to half a pixel.
+    if abs(image.width * size[1] - image.height * size[0]) > (image.width + image.height) / 2:
+        fail("resize_forbidden", "resizing must preserve proportions within pixel rounding")
 
     pixels = image_values(image)
     alpha_values = [pixel[3] / 255 for pixel in pixels]
@@ -668,6 +693,40 @@ def resize_linear_premultiplied(image: Image.Image, size: tuple[int, int]) -> Im
     resized = Image.new("RGBA", size)
     resized.putdata(output)
     return resized
+
+
+def normalize_runtime(
+    master: Image.Image,
+    target: tuple[int, int],
+    placement: dict[str, Any] | None,
+) -> tuple[Image.Image, dict[str, Any]]:
+    scale = placement["scale"] if placement else min(target[0] / master.width, target[1] / master.height)
+    scaled_size = (max(1, round(master.width * scale)), max(1, round(master.height * scale)))
+    if max(scaled_size) > 32768 or scaled_size[0] * scaled_size[1] > MAX_SOURCE_PIXELS:
+        fail("invalid_placement", "scaled image exceeds the processing pixel limit")
+    x = placement["x"] if placement else (target[0] - scaled_size[0]) // 2
+    y = placement["y"] if placement else (target[1] - scaled_size[1]) // 2
+    resized = resize_linear_premultiplied(master, scaled_size)
+    bounds = resized.getchannel("A").getbbox()
+    if bounds and (bounds[0] + x < 0 or bounds[1] + y < 0 or bounds[2] + x > target[0] or bounds[3] + y > target[1]):
+        fail("placement_clips_subject", "placement would discard nontransparent subject pixels; adjust scale or offset")
+    runtime = Image.new("RGBA", target, (0, 0, 0, 0))
+    # Paste without a mask: RGBA is copied once, not multiplied by Alpha again.
+    runtime.paste(resized, (x, y))
+    report = {
+        "mode": "exact_copy" if master.size == scaled_size and master.size == target and (x, y) == (0, 0)
+        else "proportional_placement" if placement or scaled_size != target
+        else "single_upscale" if scale > 1 else "single_downscale",
+        "source_size": {"width": master.width, "height": master.height},
+        "target_size": {"width": target[0], "height": target[1]},
+        "filter": "none" if master.size == scaled_size else "linear_light_premultiplied_alpha_lanczos",
+        "scale": scale,
+        "scaled_size": {"width": scaled_size[0], "height": scaled_size[1]},
+        "offset": {"x": x, "y": y},
+        "reason": placement["reason"] if placement else "Proportional fit and centering of the complete source crop.",
+        "requires_detail_review": scale > 1,
+    }
+    return runtime, report
 
 
 def apply_edge_fallback(image: Image.Image, contract: int, feather: float) -> Image.Image:
@@ -814,7 +873,7 @@ def edge_fringe_report(
 
 def validate_transparent_frame(
     image: Image.Image,
-    key: tuple[int, int, int],
+    key: tuple[int, int, int] | None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     pixels = image_values(image)
     width, height = image.size
@@ -827,14 +886,15 @@ def validate_transparent_frame(
     )
     transparent_rgb = sum(pixel[3] == 0 and any(pixel[:3]) for pixel in pixels)
     visible_key = sum(
-        pixel[3] >= VISIBLE_ALPHA_THRESHOLD and channel_distance(pixel[:3], key) <= 32
+        key is not None and pixel[3] >= VISIBLE_ALPHA_THRESHOLD and channel_distance(pixel[:3], key) <= 32
         for pixel in pixels
     )
     edge_fringe_indices = [
         index
         for index, pixel in enumerate(pixels)
         if (
-            boundary[index]
+            key is not None
+            and boundary[index]
             and pixel[3] >= VISIBLE_ALPHA_THRESHOLD
             and (
                 channel_distance(pixel[:3], key) <= 64
@@ -855,8 +915,10 @@ def validate_transparent_frame(
         errors.append("frame has no transparent background pixels")
     if border_visible:
         errors.append("visible subject pixels touch the frame edge")
-    if transparent_rgb:
+    if key is not None and transparent_rgb:
         errors.append("fully transparent pixels contain non-zero RGB")
+    if key is None and (visible_count < width * height * 0.01 or transparent_count < width * height * 0.01):
+        errors.append("native Alpha requires at least 1% visible subject and 1% transparent background")
     if visible_key:
         warnings.append(
             "visible pixels close to the chroma key are diagnostic only; "
@@ -877,9 +939,10 @@ def validate_transparent_frame(
             "transparent_pixels": transparent_count,
             "border_visible_pixels": border_visible,
             "transparent_rgb_residue_pixels": transparent_rgb,
-            "visible_key_pixels": visible_key,
-            "edge_chroma_fringe_pixels": edge_fringe["pixels"],
-            "edge_chroma_fringe": edge_fringe,
+            "chroma_checks_applied": key is not None,
+            "visible_key_pixels": visible_key if key is not None else None,
+            "edge_chroma_fringe_pixels": edge_fringe["pixels"] if key is not None else None,
+            "edge_chroma_fringe": edge_fringe if key is not None else None,
             "enclosed_transparent_component_areas": holes,
         },
         errors,
@@ -899,13 +962,13 @@ def checkerboard(size: tuple[int, int]) -> Image.Image:
     return image
 
 
-def qa_preview(image: Image.Image, key: tuple[int, int, int]) -> Image.Image:
+def qa_preview(image: Image.Image, key: tuple[int, int, int] | None) -> Image.Image:
     backgrounds = [
         checkerboard(image.size),
         Image.new("RGBA", image.size, (255, 255, 255, 255)),
         Image.new("RGBA", image.size, (128, 128, 128, 255)),
         Image.new("RGBA", image.size, (0, 0, 0, 255)),
-        Image.new("RGBA", image.size, tuple(255 - value for value in key) + (255,)),
+        Image.new("RGBA", image.size, tuple(255 - value for value in (key or (255, 127, 0))) + (255,)),
     ]
     for background in backgrounds:
         background.alpha_composite(image)
@@ -963,6 +1026,7 @@ def preflight_destinations(
     report_path: Path,
     preview_dir: Path,
     replace: bool,
+    protected_inputs: tuple[Path, ...] = (),
 ) -> None:
     try:
         preview_metadata = preview_dir.lstat()
@@ -983,11 +1047,27 @@ def preflight_destinations(
     destinations.extend(
         preview_dir / f"{job['id'].replace('/', '__')}.png" for job in jobs
     )
+    # Inputs from every frame remain immutable, including during --replace.
+    # Resolve parent aliases and compare inode identities for hard links.
+    inputs = [*protected_inputs, *(job["source"] for job in jobs)]
+    inputs.extend(job["foreground_mask"] for job in jobs if job["foreground_mask"] is not None)
+    input_paths = {path.resolve() for path in inputs}
+    input_identities = set()
+    for path in inputs:
+        try:
+            metadata = path.stat()
+        except OSError:
+            continue  # Per-frame input validation reports missing sources.
+        input_identities.add((metadata.st_dev, metadata.st_ino))
     seen: set[Path] = set()
+    seen_identities: set[tuple[int, int]] = set()
     for destination in destinations:
-        if destination in seen:
+        resolved = destination.resolve()
+        if resolved in input_paths:
+            fail("invalid_destination", f"destination would overwrite an input: {destination}")
+        if resolved in seen:
             fail("invalid_jobs", f"duplicate destination path {destination}")
-        seen.add(destination)
+        seen.add(resolved)
         try:
             metadata = destination.lstat()
         except FileNotFoundError:
@@ -999,6 +1079,10 @@ def preflight_destinations(
                 "invalid_destination",
                 f"destination must be a regular non-symlink file when it exists: {destination}",
             )
+        identity = (metadata.st_dev, metadata.st_ino)
+        if identity in input_identities or identity in seen_identities:
+            fail("invalid_destination", f"destination aliases an input or another output: {destination}")
+        seen_identities.add(identity)
         if not replace:
             fail("destination_exists", f"destination already exists: {destination}")
 
@@ -1012,94 +1096,109 @@ def process_job(
     replace: bool,
 ) -> dict[str, Any]:
     source, crop_bounds, decoded_size = load_crop(job["source"], job["crop"])
-    if source.width < target_size[0] or source.height < target_size[1]:
-        fail(
-            "source_capacity_missing",
-            "source crop is smaller than the selected runtime target; generate or select a larger source crop because downscaling is allowed but upscaling is not",
-        )
-    sure_foreground = load_foreground_mask(
-        job["foreground_mask"],
-        source_size=decoded_size,
-        crop_bounds=crop_bounds,
-        crop_size=source.size,
-    )
-    pixels = image_values(source)
-    if any(pixel[3] != 255 for pixel in pixels):
-        fail(
-            "invalid_chroma_source",
-            "source crop must be fully opaque flat-background artwork; do not request model-native transparency",
-        )
-    key, key_report = estimate_key(pixels, source.size, job["key_color"])
-    matte, matte_report = build_matte(
-        source,
-        key,
-        key_report["transparent_threshold"],
-        sure_foreground,
-    )
-    cleaned, cleanup_report = reconstruct_edge_rgb(matte, key, target_size)
-    if not cleanup_report["alpha_preserved"]:
-        fail("alpha_changed", "source-resolution RGB reconstruction changed Alpha")
-
-    source_pixels = image_values(source)
-    cleaned_pixels = image_values(cleaned)
-    master_boundary = alpha_edge_band(cleaned.getchannel("A"), cleanup_report["edge_radius_source_px"])
-    interior_rgb_changes = sum(
-        source_pixel[:3] != cleaned_pixel[:3]
-        for index, (source_pixel, cleaned_pixel) in enumerate(zip(source_pixels, cleaned_pixels))
-        if cleaned_pixel[3] == 255 and not master_boundary[index]
-    )
-    if interior_rgb_changes:
-        fail("interior_rgb_changed", "pipeline changed opaque RGB outside the alpha edge band")
-
-    runtime_before_reconstruction = resize_linear_premultiplied(cleaned, target_size)
-    runtime_before_reconstruction = apply_edge_fallback(
-        runtime_before_reconstruction,
-        edge_contract,
-        edge_feather,
-    )
-    runtime_repair_needed = cleaned.size != target_size or bool(edge_contract or edge_feather)
-    if runtime_repair_needed:
-        runtime, runtime_cleanup_report = reconstruct_edge_rgb(
-            runtime_before_reconstruction,
-            key,
-            target_size,
-        )
-        runtime_radius = runtime_cleanup_report.pop("edge_radius_source_px")
-        runtime_cleanup_report.update(
-            {
-                "applied": True,
-                "edge_radius_runtime_px": runtime_radius,
-            }
-        )
-        if not runtime_cleanup_report["alpha_preserved"]:
-            fail("alpha_changed", "runtime-size RGB reconstruction changed Alpha")
-        runtime_boundary = alpha_edge_band(runtime.getchannel("A"), runtime_radius)
-        runtime_interior_rgb_changes = sum(
-            before[:3] != after[:3]
-            for index, (before, after) in enumerate(
-                zip(
-                    image_values(runtime_before_reconstruction),
-                    image_values(runtime),
-                )
-            )
-            if after[3] == 255 and not runtime_boundary[index]
-        )
-    else:
-        runtime = runtime_before_reconstruction
-        runtime_cleanup_report = {
+    source_mode = job["source_mode"]
+    if source_mode == "native_alpha":
+        if edge_contract or edge_feather:
+            fail("invalid_native_alpha_options", "native_alpha forbids edge contraction and feathering")
+        alpha = source.getchannel("A")
+        if alpha.getextrema()[0] == 255 or alpha.getextrema()[1] < VISIBLE_ALPHA_THRESHOLD:
+            fail("invalid_native_alpha_source", "native_alpha requires genuine transparent background and visible subject; an opaque checkerboard is not transparency")
+        # Preserve decoded RGBA, including hidden RGB and authored translucency.
+        # No matte, decontamination, contraction, or feathering runs in this branch.
+        cleaned = source.copy()
+        runtime, normalization = normalize_runtime(cleaned, target_size, job.get("placement"))
+        key = None
+        key_report = matte_report = None
+        cleanup_report = runtime_cleanup_report = {
             "applied": False,
-            "reason": "source_resolution_repair_already_matches_final_size",
-            "edge_radius_runtime_px": 0,
+            "reason": "native_alpha_preserved",
             "alpha_preserved": True,
-            "reconstructed_translucent_pixels": 0,
-            "reconstructed_opaque_pixels": 0,
         }
-        runtime_interior_rgb_changes = 0
-    if runtime_interior_rgb_changes:
-        fail(
-            "interior_rgb_changed",
-            "runtime edge repair changed opaque RGB outside the alpha edge band",
+        interior_rgb_changes = runtime_interior_rgb_changes = 0
+    else:
+        sure_foreground = load_foreground_mask(
+            job["foreground_mask"],
+            source_size=decoded_size,
+            crop_bounds=crop_bounds,
+            crop_size=source.size,
         )
+        pixels = image_values(source)
+        if any(pixel[3] != 255 for pixel in pixels):
+            fail(
+                "invalid_chroma_source",
+                "flat_chroma requires fully opaque artwork; use native_alpha for genuine transparent sources",
+            )
+        key, key_report = estimate_key(pixels, source.size, job["key_color"])
+        matte, matte_report = build_matte(
+            source,
+            key,
+            key_report["transparent_threshold"],
+            sure_foreground,
+        )
+        cleaned, cleanup_report = reconstruct_edge_rgb(matte, key, target_size)
+        if not cleanup_report["alpha_preserved"]:
+            fail("alpha_changed", "source-resolution RGB reconstruction changed Alpha")
+
+        source_pixels = image_values(source)
+        cleaned_pixels = image_values(cleaned)
+        master_boundary = alpha_edge_band(cleaned.getchannel("A"), cleanup_report["edge_radius_source_px"])
+        interior_rgb_changes = sum(
+            source_pixel[:3] != cleaned_pixel[:3]
+            for index, (source_pixel, cleaned_pixel) in enumerate(zip(source_pixels, cleaned_pixels))
+            if cleaned_pixel[3] == 255 and not master_boundary[index]
+        )
+        if interior_rgb_changes:
+            fail("interior_rgb_changed", "pipeline changed opaque RGB outside the alpha edge band")
+
+        runtime_before_reconstruction, normalization = normalize_runtime(cleaned, target_size, job.get("placement"))
+        runtime_before_reconstruction = apply_edge_fallback(
+            runtime_before_reconstruction,
+            edge_contract,
+            edge_feather,
+        )
+        runtime_repair_needed = normalization["mode"] != "exact_copy" or bool(edge_contract or edge_feather)
+        if runtime_repair_needed:
+            runtime, runtime_cleanup_report = reconstruct_edge_rgb(
+                runtime_before_reconstruction,
+                key,
+                target_size,
+            )
+            runtime_radius = runtime_cleanup_report.pop("edge_radius_source_px")
+            runtime_cleanup_report.update(
+                {
+                    "applied": True,
+                    "edge_radius_runtime_px": runtime_radius,
+                }
+            )
+            if not runtime_cleanup_report["alpha_preserved"]:
+                fail("alpha_changed", "runtime-size RGB reconstruction changed Alpha")
+            runtime_boundary = alpha_edge_band(runtime.getchannel("A"), runtime_radius)
+            runtime_interior_rgb_changes = sum(
+                before[:3] != after[:3]
+                for index, (before, after) in enumerate(
+                    zip(
+                        image_values(runtime_before_reconstruction),
+                        image_values(runtime),
+                    )
+                )
+                if after[3] == 255 and not runtime_boundary[index]
+            )
+        else:
+            runtime = runtime_before_reconstruction
+            runtime_cleanup_report = {
+                "applied": False,
+                "reason": "source_resolution_repair_already_matches_final_size",
+                "edge_radius_runtime_px": 0,
+                "alpha_preserved": True,
+                "reconstructed_translucent_pixels": 0,
+                "reconstructed_opaque_pixels": 0,
+            }
+            runtime_interior_rgb_changes = 0
+        if runtime_interior_rgb_changes:
+            fail(
+                "interior_rgb_changed",
+                "runtime edge repair changed opaque RGB outside the alpha edge band",
+            )
     master_qa, master_errors, master_warnings = validate_transparent_frame(cleaned, key)
     runtime_qa, runtime_errors, runtime_warnings = validate_transparent_frame(runtime, key)
     preview_path = preview_dir / f"{job['id'].replace('/', '__')}.png"
@@ -1109,12 +1208,15 @@ def process_job(
 
     errors = sorted(set([*master_errors, *runtime_errors]))
     warnings = [*master_warnings, *runtime_warnings]
+    if normalization["requires_detail_review"]:
+        warnings.append("source was enlarged; inspect exact-tier facial, material and edge detail and reject visible blur or pixelation")
     if edge_contract:
         warnings.append("edge contraction fallback was applied at one final output pixel")
     if edge_feather:
         warnings.append(f"inward-only alpha feather fallback was applied at {edge_feather} final pixels")
     return {
         "id": job["id"],
+        "source_mode": source_mode,
         "ok": not errors,
         "errors": errors,
         "warnings": sorted(set(warnings)),
@@ -1144,17 +1246,8 @@ def process_job(
         "runtime_edge_rgb_reconstruction": runtime_cleanup_report,
         "interior_opaque_rgb_changed_pixels": interior_rgb_changes,
         "runtime_interior_opaque_rgb_changed_pixels": runtime_interior_rgb_changes,
-        "resize_count": 0 if cleaned.size == target_size else 1,
-        "size_normalization": {
-            "mode": "exact_copy" if cleaned.size == target_size else "single_downscale",
-            "source_size": {"width": cleaned.width, "height": cleaned.height},
-            "target_size": {"width": target_size[0], "height": target_size[1]},
-            "filter": (
-                "none"
-                if cleaned.size == target_size
-                else "linear_light_premultiplied_alpha_lanczos"
-            ),
-        },
+        "resize_count": 0 if normalization["filter"] == "none" else 1,
+        "size_normalization": normalization,
         "edge_contract_final_px": edge_contract,
         "edge_feather_final_px": edge_feather,
         "master": {
@@ -1172,7 +1265,7 @@ def process_job(
         "preview": {
             "path": str(preview_path),
             "sha256": sha256(preview_path),
-            "panels": ["checkerboard", "white", "gray", "black", "key_complement"],
+            "panels": ["checkerboard", "white", "gray", "black", "key_complement" if key else "blue"],
         },
     }
 
@@ -1182,7 +1275,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     report_path = absolute_path(args.report, "--report")
     preview_dir = absolute_path(args.preview_dir, "--preview-dir")
     target_size, jobs = parse_jobs(jobs_path)
-    preflight_destinations(jobs, report_path, preview_dir, args.replace)
+    preflight_destinations(jobs, report_path, preview_dir, args.replace, (jobs_path,))
     results: list[dict[str, Any]] = []
     for job in jobs:
         try:
@@ -1218,14 +1311,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "target_size": {"width": target_size[0], "height": target_size[1]},
         "target_tier": TARGET_TIERS[target_size],
         "configuration": {
-            "spatial_background": "border_connected_key_candidates",
-            "soft_matte": True,
-            "edge_rgb_scope": "alpha_boundary_with_chroma_evidence",
-            "alpha_preserved_during_edge_rgb_reconstruction": True,
-            "runtime_edge_rgb_reconstruction": "after_final_resize_and_alpha_fallback",
+            "source_mode": "explicit_per_frame_default_flat_chroma",
+            "native_alpha": "preserve_source_rgba_no_matte_or_edge_filters",
+            "flat_chroma": "border_connected_matte_and_source_runtime_edge_rgb_reconstruction",
             "visible_key_pixels": "diagnostic_only_requires_preview_review",
-            "minor_edge_fringe": "bounded_alpha_weighted_review_warning",
-            "resize": "linear_light_premultiplied_lanczos_once_or_exact_copy",
+            "resize": "linear_light_premultiplied_lanczos_with_proportional_canvas_placement",
             "edge_contract_final_px": args.edge_contract,
             "edge_feather_final_px": args.edge_feather,
         },
