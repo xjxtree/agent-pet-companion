@@ -72,6 +72,11 @@ const BUNDLED_SKILL_FILES: &[BundledSkillFile] = &[
         mode: 0o644,
     },
     BundledSkillFile {
+        relative_path: "scripts/generation_evidence.py",
+        content: include_str!("../../../skills/agent-pet-maker/scripts/generation_evidence.py"),
+        mode: 0o755,
+    },
+    BundledSkillFile {
         relative_path: "scripts/petpack_workspace.py",
         content: include_str!("../../../skills/agent-pet-maker/scripts/petpack_workspace.py"),
         mode: 0o755,
@@ -82,6 +87,11 @@ const BUNDLED_SKILL_FILES: &[BundledSkillFile] = &[
             "../../../skills/agent-pet-maker/scripts/prepare_transparent_frames.py"
         ),
         mode: 0o755,
+    },
+    BundledSkillFile {
+        relative_path: "tests/test_generation_evidence.py",
+        content: include_str!("../../../skills/agent-pet-maker/tests/test_generation_evidence.py"),
+        mode: 0o644,
     },
     BundledSkillFile {
         relative_path: "tests/test_petpack_workspace.py",

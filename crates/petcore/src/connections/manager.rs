@@ -104,6 +104,10 @@ const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
         include_str!("../../../../skills/agent-pet-maker/references/security.md"),
     ),
     (
+        "scripts/generation_evidence.py",
+        include_str!("../../../../skills/agent-pet-maker/scripts/generation_evidence.py"),
+    ),
+    (
         "scripts/petpack_workspace.py",
         include_str!("../../../../skills/agent-pet-maker/scripts/petpack_workspace.py"),
     ),
@@ -116,6 +120,10 @@ const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
         include_str!("../../../../skills/agent-pet-maker/agents/openai.yaml"),
     ),
     (
+        "tests/test_generation_evidence.py",
+        include_str!("../../../../skills/agent-pet-maker/tests/test_generation_evidence.py"),
+    ),
+    (
         "tests/test_petpack_workspace.py",
         include_str!("../../../../skills/agent-pet-maker/tests/test_petpack_workspace.py"),
     ),
@@ -125,6 +133,7 @@ const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
     ),
 ];
 const AGENT_PET_MAKER_EXECUTABLE_FILES: &[&str] = &[
+    "scripts/generation_evidence.py",
     "scripts/petpack_workspace.py",
     "scripts/prepare_transparent_frames.py",
 ];

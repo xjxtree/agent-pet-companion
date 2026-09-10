@@ -50,6 +50,31 @@ def markdown_links(path: Path) -> list[Path]:
 
 
 class SkillStructureTests(unittest.TestCase):
+    def test_embedded_maker_inventories_cover_source_files_and_build_inputs(self) -> None:
+        expected = {
+            path.relative_to(MAKER).as_posix()
+            for path in MAKER.rglob("*")
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix not in {".pyc", ".pyo"}
+        }
+        for relative in (
+            "crates/petcore/src/portable_skill.rs",
+            "crates/petcore/src/connections/manager.rs",
+        ):
+            source = (REPOSITORY / relative).read_text(encoding="utf-8")
+            embedded = set(
+                re.findall(
+                    r'include_str!\(\s*"[^"]*/skills/agent-pet-maker/([^"]+)"', source
+                )
+            )
+            with self.subTest(inventory=relative):
+                self.assertEqual(embedded, expected)
+
+        build = (REPOSITORY / "crates/petcore/build.rs").read_text(encoding="utf-8")
+        inputs = set(re.findall(r'"skills/agent-pet-maker/([^"]+)"', build))
+        self.assertEqual(inputs, expected)
+
     def test_frontmatter_is_minimal_and_trigger_descriptions_are_specific(self) -> None:
         expected = {
             MAKER / "SKILL.md": "agent-pet-maker",
