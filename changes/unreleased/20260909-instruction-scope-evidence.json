@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Changed",
-  "scope": "docs",
-  "summary_en": "Separate intended behavior from implementation evidence in Agent guidance and the documentation index.",
-  "summary_zh": "在 Agent 约定和文档索引中区分预期行为与实现证据。"
-}

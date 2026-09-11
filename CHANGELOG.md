@@ -14,6 +14,51 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-11
+
+### Changed / 变更
+
+<!-- apc-fragment:20260902-oversized-subject-recovery -->
+- Pet Maker and Studio distinguish a safely downscalable complete pose from a clipped subject, and recover overflowing generations with shared geometry, normalized provider references, and verified multi-row Dreamina layouts.
+
+  Pet Maker 与 Studio 区分可安全等比缩小的完整姿势与被裁断的主体；对于越界生图，使用共享几何、等比缩小的生成端参考图及已验证的 Dreamina 多行布局恢复。
+<!-- apc-fragment:20260905-codex-astra-project-defaults-c18e327a -->
+- Codex project configuration now selects GPT-6 Astra, with aligned Agent execution guidance and bilingual model setup documentation.
+
+  Codex 项目配置默认选择 GPT-6 Astra，并同步 Agent 执行约定与中英文模型设置文档。
+<!-- apc-fragment:20260905-maker-gpt-6-astra-7c824df1 -->
+- AI Pet Maker now defaults to GPT-6 Astra for new and resumed Codex Studio turns, preserving medium reasoning and explicit model overrides.
+
+  AI 宠物制作的新建与恢复 Codex Studio 回合默认使用 GPT-6 Astra，保留中等推理强度与显式模型覆盖。
+<!-- apc-fragment:20260906-agents-demand-loading-d83f209a -->
+- Condense project Agent guidance into task-based references, preserve product and release boundaries, and correct stale contributor, changelog, and timing documentation.
+
+  将项目 Agent 指令精简为按任务读取入口，保留产品与发布边界，并修正贡献、变更日志及动画时长文档中的旧说明。
+<!-- apc-fragment:20260909-instruction-scope-evidence -->
+- Separate intended behavior from implementation evidence in Agent guidance and the documentation index.
+
+  在 Agent 约定和文档索引中区分预期行为与实现证据。
+<!-- apc-fragment:20260901-imagegen-native-alpha-default -->
+<!-- apc-fragment:20260909-native-alpha -->
+- Codex Maker and Studio prefer native Alpha with verified retry evidence, allow quality-preserving scaling and canvas placement of AI artwork, retain original assessments when reusing outputs, and require consistent final-size motion and complete production validation.
+
+  Codex Maker 与 Studio 优先原生 Alpha 并校验重试记录，允许以成品质量为准缩放和调整 AI 素材画布，复用素材时保留原评审，最终仍要求动作一致性与完整制作验证。
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260824-integration-b-env-flake -->
+- Isolated PetCore integration tests now strip sibling tests' environment overrides and synchronize process creation, preventing unrelated Studio turn timeouts during concurrent runs.
+
+  隔离的 PetCore 集成测试会剥离兄弟测试的环境覆盖变量，并同步进程创建，避免并发运行时出现无关的 Studio 回合超时。
+<!-- apc-fragment:pr66-fork-pr-ci -->
+- Fork and ordinary-branch pull requests can pass required CI without internal automatic-merge tickets; maintainers merge them after validation.
+
+  fork 和普通分支 PR 无需生成内部自动合并票据即可通过必需 CI，并在验证后由维护者手动合并。
+<!-- apc-fragment:pr66-swift-toolchain-docs -->
+- Document Swift 6.2 or newer as the minimum source-build toolchain in the bilingual developer guides.
+
+  在中英文开发指南中明确源码构建最低需要 Swift 6.2 或更新版本。
+
 ## [0.5.2] - 2026-08-24
 
 ### Fixed / 修复
