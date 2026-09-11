@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "docs",
-  "summary_en": "Document Swift 6.2 or newer as the minimum source-build toolchain in the bilingual developer guides.",
-  "summary_zh": "在中英文开发指南中明确源码构建最低需要 Swift 6.2 或更新版本。"
-}
