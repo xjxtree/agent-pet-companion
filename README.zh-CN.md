@@ -97,7 +97,7 @@ App 在健康启动后每天最多检查一次最新稳定版本。发现更新�
 
 ## 面向开发者
 
-从源码构建需要 macOS 14+、包含 Swift 6 与 macOS SDK 的 Apple Command Line Tools、`rust-toolchain.toml` 固定的 Rust 工具链，以及 Python 3。完整 Xcode 可选。
+从源码构建需要 macOS 14+、包含 Swift 6.2 或更新版本与 macOS SDK 的 Apple Command Line Tools、`rust-toolchain.toml` 固定的 Rust 工具链，以及 Python 3。完整 Xcode 可选。
 
 ```bash
 git clone https://github.com/xjxtree/agent-pet-companion.git
