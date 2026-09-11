@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "ci",
+  "summary_en": "Fork and ordinary-branch pull requests can pass required CI without internal automatic-merge tickets; maintainers merge them after validation.",
+  "summary_zh": "fork 和普通分支 PR 无需生成内部自动合并票据即可通过必需 CI，并在验证后由维护者手动合并。"
+}

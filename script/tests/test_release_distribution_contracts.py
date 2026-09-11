@@ -1125,6 +1125,35 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("|| 'validation'", concurrency)
         self.assertIn("cancel-in-progress: true", concurrency)
 
+    def test_ci_guards_ticket_creation_and_upload_with_repository_eligibility(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "merge_ticket_eligible: ${{ steps.development_context.outputs.merge_ticket_eligible }}",
+            source,
+        )
+        self.assertIn(
+            "PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}",
+            source,
+        )
+        self.assertIn('--repository "$GITHUB_REPOSITORY"', source)
+        self.assertIn('--head-repository "$PR_HEAD_REPOSITORY"', source)
+        for step in (
+            "Bind the successful PR run to its exact merge lane",
+            "Upload exact PR merge ticket",
+        ):
+            with self.subTest(step=step):
+                condition = re.search(
+                    rf"(?m)^      - name: {re.escape(step)}\n        if: (.+)$",
+                    source,
+                )
+                self.assertIsNotNone(condition)
+                self.assertEqual(
+                    condition.group(1),
+                    "github.event_name == 'pull_request' && "
+                    "needs.scope.outputs.actionable == '1' && "
+                    "needs.scope.outputs.merge_ticket_eligible == '1'",
+                )
+
     def test_successful_protected_pr_ci_merges_and_dispatches_main_without_pr_code(self) -> None:
         source = (ROOT / ".github/workflows/auto-merge.yml").read_text(
             encoding="utf-8"

@@ -1026,6 +1026,75 @@ class DevelopmentFlowTests(unittest.TestCase):
         )
         self.assertTrue(release_push.release_preparation)
 
+    def test_merge_tickets_require_a_same_repository_managed_head(self) -> None:
+        repository = "owner/repo"
+        cases = [
+            (repository, "gd-ops/fix/42-bubble", True),
+            (repository, "gd-ops/task/42-feature", True),
+            (repository, "gd-ops/train/release-1", True),
+            (repository, "gd-ops/release/500-0.5.0", True),
+            ("contributor/repo", "webbrain/readme-improvement", False),
+            ("contributor/repo", "gd-ops/fix/42-bubble", False),
+            (repository, "feature/readme-improvement", False),
+            (repository, "gd-ops/task/", False),
+            ("", "gd-ops/fix/42-bubble", False),
+        ]
+        for head_repository, head, eligible in cases:
+            with self.subTest(head_repository=head_repository, head=head):
+                context = development_flow.ci_context(
+                    "pull_request", "main", head, False,
+                    repository=repository,
+                    head_repository=head_repository,
+                )
+                self.assertEqual(context.merge_ticket_eligible, eligible)
+                self.assertTrue(context.full_candidate)
+                self.assertFalse(context.release_source)
+
+        missing_identity = development_flow.ci_context(
+            "pull_request", "main", "gd-ops/fix/42-bubble", False
+        )
+        self.assertFalse(missing_identity.merge_ticket_eligible)
+
+    def test_merge_ticket_eligibility_preserves_draft_train_and_push_scope(self) -> None:
+        repository = "owner/repo"
+        for head_repository in (repository, "contributor/repo"):
+            for base, draft in (("main", True), ("gd-ops/train/release-1", False)):
+                with self.subTest(head_repository=head_repository, base=base):
+                    context = development_flow.ci_context(
+                        "pull_request", base, "gd-ops/task/42-feature", draft,
+                        repository=repository,
+                        head_repository=head_repository,
+                    )
+                    self.assertFalse(context.full_candidate)
+                    self.assertEqual(
+                        context.merge_ticket_eligible, head_repository == repository
+                    )
+        push = development_flow.ci_context(
+            "push", "main", "gd-ops/fix/42-bubble", False,
+            repository=repository,
+            head_repository=repository,
+        )
+        self.assertFalse(push.merge_ticket_eligible)
+        self.assertTrue(push.full_candidate)
+        self.assertTrue(push.release_source)
+
+    def test_ci_context_cli_exports_fork_validation_without_a_merge_ticket(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable, str(DEVELOPMENT_FLOW_PATH),
+                "--root", str(ROOT), "ci-context",
+                "--event", "pull_request", "--base", "main",
+                "--head", "gd-ops/fix/42-bubble",
+                "--repository", "owner/repo",
+                "--head-repository", "contributor/repo",
+                "--format", "github",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        outputs = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(outputs["full_candidate"], "1")
+        self.assertEqual(outputs["merge_ticket_eligible"], "0")
+
 
 class ChangelogFragmentTests(unittest.TestCase):
     def test_policy_boolean_values_accept_cli_and_workflow_forms(self) -> None:
