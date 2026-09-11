@@ -5,7 +5,7 @@ Agent Pet Companion is a local-first native macOS project. Keep changes focused 
 ## Prerequisites / 开发环境
 
 - macOS 14+
-- Apple Command Line Tools with Swift 6 and a macOS SDK; full Xcode is optional / 包含 Swift 6 与 macOS SDK 的 Apple Command Line Tools；完整 Xcode 可选
+- Apple Command Line Tools with Swift 6.2 or newer and a macOS SDK; full Xcode is optional / 包含 Swift 6.2 或更新版本与 macOS SDK 的 Apple Command Line Tools；完整 Xcode 可选
 - Rust toolchain pinned by `rust-toolchain.toml`, including `rustfmt` and `clippy`
 - Python 3; release visual validation also uses the pinned Pillow dependency / Python 3；发布视觉校验还会使用固定版本的 Pillow
 
