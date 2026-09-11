@@ -53,6 +53,7 @@ jobs:
       full_candidate: ${{ steps.development_context.outputs.full_candidate }}
       release_source: ${{ steps.development_context.outputs.release_source }}
       release_preparation: ${{ steps.development_context.outputs.release_preparation }}
+      merge_ticket_eligible: ${{ steps.development_context.outputs.merge_ticket_eligible }}
       actionable: ${{ steps.actionable.outputs.actionable }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -116,6 +117,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_BRANCH: ${{ github.base_ref }}
           PR_HEAD_BRANCH: ${{ github.head_ref }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
@@ -123,6 +125,8 @@ jobs:
               --event pull_request \
               --base "$PR_BASE_BRANCH" \
               --head "$PR_HEAD_BRANCH" \
+              --repository "$GITHUB_REPOSITORY" \
+              --head-repository "$PR_HEAD_REPOSITORY" \
               --draft "${PR_DRAFT:-false}" \
               --format github >>"$GITHUB_OUTPUT"
           else
@@ -1232,7 +1236,7 @@ jobs:
         run: git diff --check
 
       - name: Bind the successful PR run to its exact merge lane
-        if: github.event_name == 'pull_request' && needs.scope.outputs.actionable == '1'
+        if: github.event_name == 'pull_request' && needs.scope.outputs.actionable == '1' && needs.scope.outputs.merge_ticket_eligible == '1'
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -1258,7 +1262,7 @@ jobs:
             --output "$RUNNER_TEMP/merge-ticket/merge-ticket.json"
 
       - name: Upload exact PR merge ticket
-        if: github.event_name == 'pull_request' && needs.scope.outputs.actionable == '1'
+        if: github.event_name == 'pull_request' && needs.scope.outputs.actionable == '1' && needs.scope.outputs.merge_ticket_eligible == '1'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-merge-ticket-${{ github.run_id }}-${{ github.run_attempt }}
