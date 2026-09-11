@@ -379,6 +379,7 @@ class CIContext:
     full_candidate: bool
     release_source: bool
     release_preparation: bool
+    merge_ticket_eligible: bool
 
 
 def ci_context(
@@ -388,13 +389,20 @@ def ci_context(
     draft: bool,
     *,
     release_preparation: bool = False,
+    repository: str = "",
+    head_repository: str = "",
 ) -> CIContext:
     if event == "push":
         if base != MAIN_BRANCH:
             fail("authoritative push CI is restricted to main")
-        return CIContext("main-push", True, True, release_preparation)
+        return CIContext("main-push", True, True, release_preparation, False)
     if event != "pull_request":
         fail("CI development lane supports only pull_request and push")
+    merge_ticket_eligible = bool(
+        repository
+        and head_repository == repository
+        and (TRAIN_PATTERN.fullmatch(head) or WORK_PATTERN.fullmatch(head))
+    )
     if base == MAIN_BRANCH:
         if TRAIN_PATTERN.fullmatch(head):
             lane = "train-to-main"
@@ -402,13 +410,19 @@ def ci_context(
             lane = "release-preparation-to-main"
         else:
             lane = "direct-to-main"
-        return CIContext(lane, not draft, False, RELEASE_PATTERN.fullmatch(head) is not None)
+        return CIContext(
+            lane,
+            not draft,
+            False,
+            RELEASE_PATTERN.fullmatch(head) is not None,
+            merge_ticket_eligible,
+        )
     if TRAIN_PATTERN.fullmatch(base):
         if WORK_PATTERN.fullmatch(head) is None:
             fail("a train accepts only gd-ops/task/* or gd-ops/fix/* pull requests")
         if RELEASE_PATTERN.fullmatch(head):
             fail("release preparation branches must target main")
-        return CIContext("task-to-train", False, False, False)
+        return CIContext("task-to-train", False, False, False, merge_ticket_eligible)
     fail("pull request base must be main or gd-ops/train/<name>")
 
 
@@ -1008,6 +1022,8 @@ def parse_args() -> argparse.Namespace:
     ci.add_argument("--event", choices=("pull_request", "push"), required=True)
     ci.add_argument("--base", required=True)
     ci.add_argument("--head", default="")
+    ci.add_argument("--repository", default="")
+    ci.add_argument("--head-repository", default="")
     ci.add_argument("--draft", choices=("true", "false"), default="false")
     ci.add_argument(
         "--release-preparation",
@@ -1098,6 +1114,8 @@ def main() -> int:
             args.head,
             args.draft == "true",
             release_preparation=args.release_preparation in ("true", "1"),
+            repository=args.repository,
+            head_repository=args.head_repository,
         )
         if args.format == "github":
             for key, value in asdict(context).items():
