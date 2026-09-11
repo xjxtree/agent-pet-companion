@@ -1,5 +1,3 @@
-
-
 <p align="center">
   <img src="logo/transparent/agent-pet-mark-transparent-1024.png" width="160" alt="Agent Pet Companion mark">
 </p>
@@ -99,7 +97,7 @@ Everyday activity display accepts only bounded task status, titles, and message 
 
 ## For developers
 
-Building from source requires macOS 14+, Apple Command Line Tools with Swift 6.2 and a macOS SDK, the Rust toolchain pinned by `rust-toolchain.toml`, and Python 3. Full Xcode is optional.
+Building from source requires macOS 14+, Apple Command Line Tools with Swift 6.2 or newer and a macOS SDK, the Rust toolchain pinned by `rust-toolchain.toml`, and Python 3. Full Xcode is optional.
 
 ```bash
 git clone https://github.com/xjxtree/agent-pet-companion.git
