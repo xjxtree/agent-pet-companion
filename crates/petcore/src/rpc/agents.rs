@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn handle(state: &CoreState, request: RpcRequest) -> Result<Value> {
     match request.method.as_str() {
+        "agent.claude_context" => claude_hooks::context(state, &request.params),
         "agent.ingest" => {
             let event = match normalize_event(&request.params) {
                 Ok(event) => event,
