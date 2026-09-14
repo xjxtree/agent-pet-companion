@@ -1095,5 +1095,5 @@ fn daemon_request_read_has_one_absolute_deadline() {
     );
 }
 
-#[path = "claude_hook_lineage.rs"]
+#[path = "daemon_lifecycle/claude_hook_lineage.rs"]
 mod claude_hook_lineage;
