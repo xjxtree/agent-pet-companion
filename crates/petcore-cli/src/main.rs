@@ -2290,6 +2290,97 @@ mod tests {
     }
 
     #[test]
+    fn claude_transcript_progress_refreshes_the_bubble_without_replacing_tool_state() {
+        use petcore::rpc::{handle_request, CoreState, RpcRequest};
+        use std::io::Write;
+
+        let directory = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(directory.path().join("home")));
+        state.ensure_ready().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let session = "claude-live-progress";
+        let mut transcript = fs::File::create(&path).unwrap();
+        for (index, text) in [
+            "Previous turn reply",
+            "The dependency checks passed. Checking the next step.",
+            "The next step is ready.",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let block = if index == 1 {
+                json!({"type": "thinking", "thinking": text, "signature": "encrypted-private-data"})
+            } else {
+                json!({"type": "text", "text": text})
+            };
+            for record in [
+                json!({"type": "assistant", "sessionId": session,
+                    "message": {"role": "assistant", "content": [block]}}),
+                json!({"type": "assistant", "sessionId": session,
+                "message": {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "", "signature": "hidden-reasoning"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "private command"}}
+                ]}}),
+                json!({"type": "user", "sessionId": session,
+                    "message": {"role": "user", "content": [{"type": "tool_result", "content": "private output"}]}}),
+                json!({"type": "last-prompt", "sessionId": session, "lastPrompt": "Continue"}),
+                json!({"type": "custom-title", "sessionId": session, "customTitle": "Live task"}),
+            ] {
+                writeln!(transcript, "{record}").unwrap();
+            }
+            let hook = json!({
+                "hook_event_name": "PreToolUse", "session_id": session,
+                "tool_name": "Bash", "tool_use_id": format!("call-{index}"),
+                "transcript_path": path
+            });
+            let mut contract = parse_contract_event(AgentSource::ClaudeCode, &hook)
+                .unwrap()
+                .unwrap();
+            recover_missing_display_fields(&mut contract, &hook);
+            let request = normalized_contract_request(&contract).unwrap();
+            let serialized = request.to_string();
+            for excluded in [
+                "encrypted-private-data",
+                "hidden-reasoning",
+                "private command",
+                "private output",
+                "transcript_path",
+            ] {
+                assert!(!serialized.contains(excluded));
+            }
+            handle_request(
+                &state,
+                RpcRequest {
+                    jsonrpc: Some("2.0".to_string()),
+                    id: Some(json!(index)),
+                    method: "agent.ingest".to_string(),
+                    params: request,
+                },
+            )
+            .unwrap();
+            let snapshot = handle_request(
+                &state,
+                RpcRequest {
+                    jsonrpc: Some("2.0".to_string()),
+                    id: Some(json!("snapshot")),
+                    method: "state.snapshot".to_string(),
+                    params: json!({}),
+                },
+            )
+            .unwrap();
+            let sessions = snapshot["active_agent_sessions"].as_array().unwrap();
+            let projected = sessions
+                .iter()
+                .find(|value| value["source"] == "claude_code")
+                .unwrap();
+            assert_eq!(projected["session_message"]["content"], text);
+            assert_eq!(projected["session_title"], "Live task");
+            assert_eq!(projected["state"], "tool");
+            assert_eq!(projected["overlay_display"]["summary_kind"], "command");
+        }
+    }
+
+    #[test]
     fn warp_runtime_navigation_preserves_only_exact_session_focus_urls() {
         let navigation = runtime_navigation_from_values(
             AgentSource::ClaudeCode,

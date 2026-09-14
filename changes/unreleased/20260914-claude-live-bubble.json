@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "claude-code",
+  "summary_en": "Claude Code bubbles now show the latest visible progress or thinking summary during tool activity instead of retaining an older reply.",
+  "summary_zh": "修复 Claude Code 气泡在工具执行期间停留于旧回复的问题，及时显示最新可见进度或思考摘要。"
+}

@@ -1262,21 +1262,28 @@ pub fn claude_transcript_display(
     projection
 }
 
-/// Joins the visible text blocks of one assistant record. Tool calls and
-/// reasoning blocks are deliberately excluded: the bubble shows what the Agent
-/// said, and raw tool payloads already have their own bounded activity field.
+/// Recovers the visible copy of one assistant record. Claude also delivers
+/// user-facing progress updates and thinking summaries as nonempty `thinking`
+/// strings. Omitted thinking is empty; encrypted signatures and
+/// `redacted_thinking` data are never display text. A reply wins over a summary
+/// in the same record, matching the bubble's same-event body selection.
 fn claude_transcript_assistant_text(record: &Value) -> Option<String> {
     let content = record.get("message")?.get("content")?;
     if let Some(text) = content.as_str() {
         return display_message(text);
     }
     let blocks = content.as_array()?;
+    claude_transcript_block_text(blocks, "text", "text")
+        .or_else(|| claude_transcript_block_text(blocks, "thinking", "thinking"))
+}
+
+fn claude_transcript_block_text(blocks: &[Value], kind: &str, field: &str) -> Option<String> {
     let mut joined = String::new();
     for block in blocks {
-        if block.get("type").and_then(Value::as_str) != Some("text") {
+        if block.get("type").and_then(Value::as_str) != Some(kind) {
             continue;
         }
-        let Some(text) = block.get("text").and_then(Value::as_str) else {
+        let Some(text) = block.get(field).and_then(Value::as_str) else {
             continue;
         };
         if text.trim().is_empty() {
@@ -2094,6 +2101,106 @@ mod claude_transcript_tests {
             after_prompt.latest_user_message.as_deref(),
             Some("继续修复")
         );
+    }
+
+    #[test]
+    fn visible_thinking_updates_replace_old_replies_and_survive_tool_bookkeeping() {
+        let session = "claude-progress";
+        let mut lines = transcript(session);
+        lines.push(assistant_record(session, "Previous turn reply"));
+        lines.push(
+            json!({
+                "type": "user", "sessionId": session,
+                "message": {"role": "user", "content": "Continue the task"}
+            })
+            .to_string(),
+        );
+        for update in ["Checking the dependencies.", "Dependency checks passed."] {
+            lines.push(
+                json!({
+                    "type": "assistant", "sessionId": session,
+                    "message": {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "", "signature": "encrypted-reasoning"},
+                        {"type": "thinking", "thinking": update, "signature": "encrypted-update"}
+                    ]}
+                })
+                .to_string(),
+            );
+            lines.push(json!({
+                "type": "assistant", "sessionId": session,
+                "message": {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "", "signature": "encrypted-reasoning"},
+                    {"type": "redacted_thinking", "data": "hidden-data"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "private command"}}
+                ]}
+            }).to_string());
+            lines.push(json!({
+                "type": "user", "sessionId": session,
+                "message": {"role": "user", "content": [{"type": "tool_result", "content": "private output"}]}
+            }).to_string());
+            lines.push(json!({"type": "last-prompt", "sessionId": session, "lastPrompt": "Continue the task"}).to_string());
+            lines.push(json!({"type": "custom-title", "sessionId": session, "customTitle": "Current title"}).to_string());
+            let projection = claude_transcript_display(&lines.join("\n"), Some(session));
+            assert_eq!(projection.latest_message_role.as_deref(), Some("assistant"));
+            assert_eq!(projection.latest_agent_message.as_deref(), Some(update));
+        }
+        lines.push(assistant_record(session, "Final reply"));
+        let projection = claude_transcript_display(&lines.join("\n"), Some(session));
+        assert_eq!(
+            projection.latest_agent_message.as_deref(),
+            Some("Final reply")
+        );
+    }
+
+    #[test]
+    fn thinking_display_is_bounded_typed_and_scoped_to_the_root_session() {
+        let session = "claude-visible-summary";
+        let record = |session: &str, sidechain: bool, content: Value| {
+            json!({
+                "type": "assistant", "sessionId": session, "isSidechain": sidechain,
+                "message": {"role": "assistant", "content": content}
+            })
+            .to_string()
+        };
+        let lines = [
+            record(
+                session,
+                false,
+                json!([
+                    {"type": "thinking", "thinking": "检查".repeat(MAX_MESSAGE_BYTES), "signature": "encrypted"}
+                ]),
+            ),
+            record(
+                "another-session",
+                false,
+                json!([
+                    {"type": "thinking", "thinking": "Other session"}
+                ]),
+            ),
+            record(
+                session,
+                true,
+                json!([
+                    {"type": "thinking", "thinking": "Child session"}
+                ]),
+            ),
+            record(
+                session,
+                false,
+                json!([
+                    {"type": "thinking", "thinking": {"text": "Malformed summary"}},
+                    {"type": "thinking", "thinking": "  \n\t", "signature": "encrypted"},
+                    {"type": "redacted_thinking", "thinking": "Redacted", "data": "hidden"}
+                ]),
+            ),
+        ];
+        let projection = claude_transcript_display(&lines.join("\n"), Some(session));
+        let content = projection.latest_agent_message.unwrap();
+        assert!(content.len() <= MAX_MESSAGE_BYTES);
+        assert!(content.starts_with("检查检查"));
+        assert!(content
+            .chars()
+            .all(|character| matches!(character, '检' | '查')));
     }
 
     #[test]
