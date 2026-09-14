@@ -14,6 +14,15 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-14
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260914-claude-live-bubble -->
+- Claude Code bubbles now show the latest visible progress or thinking summary during tool activity instead of retaining an older reply.
+
+  修复 Claude Code 气泡在工具执行期间停留于旧回复的问题，及时显示最新可见进度或思考摘要。
+
 ## [0.5.3] - 2026-09-11
 
 ### Changed / 变更
