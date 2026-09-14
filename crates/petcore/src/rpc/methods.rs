@@ -120,6 +120,11 @@ pub(super) const RPC_METHODS: &[RpcMethodSpec] = &[
     },
     // Agents (agent.* / events.*)
     RpcMethodSpec {
+        method: "agent.claude_context",
+        owner: RpcMethodOwner::Agents,
+        allowed_params: &["session_id", "hook_pid"],
+    },
+    RpcMethodSpec {
         method: "agent.ingest",
         owner: RpcMethodOwner::Agents,
         allowed_params: AGENT_EVENT_ALLOWED_FIELDS,
@@ -350,7 +355,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total, "duplicate method in registry");
         assert_eq!(
-            total, 56,
+            total, 57,
             "method inventory changed; update this test deliberately"
         );
     }

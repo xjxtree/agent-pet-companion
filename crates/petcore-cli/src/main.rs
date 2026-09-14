@@ -272,15 +272,63 @@ fn run_agent(mut args: Vec<String>) -> Result<()> {
                 contract.contract_version.as_deref(),
                 reported_contract_version.as_deref(),
             );
-            recover_missing_display_fields(&mut contract, &payload);
+            let paths = AppPaths::from_env()?;
+            if contract.source == AgentSource::ClaudeCode
+                && !contract.diagnostic
+                && contract.source_event != "session.child"
+            {
+                if let Some(session_id) = &contract.session_id {
+                    let context = daemon::request(
+                        &paths,
+                        "agent.claude_context",
+                        json!({
+                            "session_id": session_id, "hook_pid": std::process::id()
+                        }),
+                    )?;
+                    apply_claude_process_context(&mut contract, &context)?;
+                }
+            }
+            if contract.source_event != "session.child" {
+                recover_missing_display_fields(&mut contract, &payload);
+            }
             let request = normalized_contract_request(&contract)?;
-            let result = daemon::request(&AppPaths::from_env()?, "agent.ingest", request)?;
+            let result = daemon::request(&paths, "agent.ingest", request)?;
             print_json(result)
         }
         other => Err(PetCoreError::InvalidRequest(format!(
             "unknown agent subcommand {other}"
         ))),
     }
+}
+
+// Context is queried while this hook process is alive. Only a corroborated
+// surface or the existing child marker crosses the ordinary ingest boundary.
+fn apply_claude_process_context(contract: &mut ContractEvent, context: &Value) -> Result<()> {
+    match context.get("origin").and_then(Value::as_str) {
+        Some("nested") => {
+            let mut child = parse_contract_event(
+                AgentSource::ClaudeCode,
+                &json!({
+                    "type": "session.child", "session_id": contract.session_id
+                }),
+            )?
+            .ok_or_else(|| PetCoreError::InvalidRequest("missing child contract".to_string()))?;
+            child.contract_version = contract.contract_version.clone();
+            *contract = child;
+        }
+        Some("desktop") => {
+            contract.session_surface = Some("claude_app".to_string());
+            contract.terminal_app = None;
+            contract.session_open_url = None;
+        }
+        Some("cli" | "unknown") => {}
+        _ => {
+            return Err(PetCoreError::InvalidRequest(
+                "invalid Claude process context".to_string(),
+            ))
+        }
+    }
+    Ok(())
 }
 
 fn fatal_contract_parse_warning(payload: &Value) -> AgentParseWarning {
@@ -1779,7 +1827,7 @@ fn runtime_navigation_from_values(
 fn runtime_agent_app_surface(
     source: AgentSource,
     bundle_identifier: Option<&str>,
-    claude_code_entrypoint: Option<&str>,
+    _claude_code_entrypoint: Option<&str>,
     opencode_client: Option<&str>,
     codex_internal_originator: Option<&str>,
 ) -> Option<&'static str> {
@@ -1793,14 +1841,8 @@ fn runtime_agent_app_surface(
         {
             Some("chatgpt_app")
         }
-        AgentSource::ClaudeCode
-            if matches!(
-                claude_code_entrypoint.map(str::trim),
-                Some("claude-desktop" | "claude-desktop-3p")
-            ) || bundle_identifier == Some("com.anthropic.claudefordesktop") =>
-        {
-            Some("claude_app")
-        }
+        // Claude App markers are inherited by nested CLI calls. PetCore
+        // corroborates the App surface using the live hook process ancestry.
         AgentSource::Opencode
             if opencode_client
                 .map(str::trim)
@@ -2179,6 +2221,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claude_process_context_preserves_root_messages_and_suppresses_nested_calls() {
+        let original = parse_contract_event(AgentSource::ClaudeCode, &json!({
+            "hook_event_name": "StopFailure", "session_id": "fixture", "last_assistant_message": "API Error: 401"
+        })).unwrap().unwrap();
+        for origin in ["cli", "unknown", "desktop"] {
+            let mut contract = original.clone();
+            apply_claude_process_context(&mut contract, &json!({"origin": origin})).unwrap();
+            assert_eq!(contract.source_event, original.source_event);
+            assert_eq!(contract.message_content, original.message_content);
+            if origin == "desktop" {
+                assert_eq!(contract.session_surface.as_deref(), Some("claude_app"));
+                assert!(contract.terminal_app.is_none());
+            }
+        }
+        let mut child = original.clone();
+        apply_claude_process_context(&mut child, &json!({"origin": "nested"})).unwrap();
+        assert_eq!(child.source_event, "session.child");
+        assert!(!child.affects_activity);
+        assert_eq!(child.session_open, Some(false));
+        assert!(child.message_content.is_none());
+        assert_eq!(child.contract_version, original.contract_version);
+        assert!(apply_claude_process_context(&mut child, &json!({"origin": "invented"})).is_err());
+    }
+
+    #[test]
     fn overlay_cli_routes_external_set_and_reset_to_explicit_intent_rpcs() {
         assert_eq!(OVERLAY_PLACEMENT_SET_RPC, "overlay.placement.reposition");
         assert_eq!(OVERLAY_PLACEMENT_RESET_RPC, "overlay.placement.reset");
@@ -2486,7 +2553,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_agent_hosts_are_not_collapsed_into_cli_terminal() {
+    fn claude_app_markers_require_process_corroboration_while_other_hosts_keep_markers() {
         let claude = runtime_navigation_from_values(
             AgentSource::ClaudeCode,
             None,
@@ -2496,7 +2563,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(claude.session_surface.as_deref(), Some("claude_app"));
+        assert_eq!(claude.session_surface.as_deref(), Some("cli_terminal"));
         assert_eq!(claude.terminal_app, None);
 
         let claude_from_explicit_host = runtime_navigation_from_values(
@@ -2510,10 +2577,13 @@ mod tests {
         );
         assert_eq!(
             claude_from_explicit_host.session_surface.as_deref(),
-            Some("claude_app")
+            Some("cli_terminal")
         );
-        assert_eq!(claude_from_explicit_host.terminal_app, None);
-        assert_eq!(claude_from_explicit_host.session_open_url, None);
+        assert_eq!(
+            claude_from_explicit_host.terminal_app.as_deref(),
+            Some("warp")
+        );
+        assert!(claude_from_explicit_host.session_open_url.is_some());
 
         for bundle_identifier in [
             "ai.opencode.desktop",

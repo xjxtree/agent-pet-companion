@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "claude",
+  "summary_en": "Suppress nested Claude CLI session bubbles using live process ancestry, and corroborate Claude App origin independently of inherited environment markers.",
+  "summary_zh": "通过实时进程父子关系屏蔽嵌套 Claude CLI 会话气泡，避免继承的环境标记将子调用误标为 Claude App。"
+}

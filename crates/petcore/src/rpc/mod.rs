@@ -1,4 +1,5 @@
 mod agents;
+mod claude_hooks;
 #[path = "connections.rs"]
 mod connections_rpc;
 mod generation;
@@ -99,6 +100,7 @@ pub struct CoreState {
     connection_evidence_projection_cache: Arc<ConnectionEvidenceProjectionCache>,
     snapshot_sequenced_event_cache: Arc<SnapshotSequencedEventCache>,
     snapshot_persisted_display_cache: Arc<SnapshotPersistedDisplayCache>,
+    claude_hook_processes: Arc<Mutex<claude_hooks::ProcessRegistry>>,
     agent_host_process_gate: Arc<Mutex<()>>,
     connection_operation_active: Arc<AtomicBool>,
     shutdown_requested: Arc<AtomicBool>,
@@ -476,6 +478,7 @@ impl CoreState {
             ),
             snapshot_sequenced_event_cache: Arc::new(SnapshotSequencedEventCache::default()),
             snapshot_persisted_display_cache: Arc::new(SnapshotPersistedDisplayCache::default()),
+            claude_hook_processes: Arc::new(Mutex::new(claude_hooks::ProcessRegistry::default())),
             agent_host_process_gate: Arc::new(Mutex::new(())),
             connection_operation_active: Arc::new(AtomicBool::new(false)),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
