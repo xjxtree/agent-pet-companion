@@ -14,6 +14,14 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-09-14
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260914-claude-nested-sessions -->
+- Suppress nested Claude CLI session bubbles using live process ancestry, and corroborate Claude App origin independently of inherited environment markers.
+
+  通过实时进程父子关系屏蔽嵌套 Claude CLI 会话气泡，避免继承的环境标记将子调用误标为 Claude App。
 ## [0.5.4] - 2026-09-14
 
 ### Fixed / 修复
