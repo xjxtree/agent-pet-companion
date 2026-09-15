@@ -14,6 +14,15 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-09-15
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260915-persistent-message-dismissal -->
+- Keep manually closed Agent messages hidden across tray reopening and App/PetCore restarts, regardless of status; new replies remain eligible to appear.
+
+  所有状态的 Agent 消息手动关闭后，重新展开列表或重启 App/PetCore 均不再显示该消息；后续新回复仍可显示。
+
 ## [0.5.5] - 2026-09-14
 
 ### Fixed / 修复
