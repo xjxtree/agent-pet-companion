@@ -2073,11 +2073,72 @@ fn acknowledge_agent_session(state: &CoreState, params: &Value) -> Result<Value>
     }))
 }
 
+fn project_agent_states(
+    state: &CoreState,
+    behavior: &BehaviorSettings,
+    revision: u64,
+    events: &[agent_state::SequencedAgentEvent],
+    acknowledgements: &BTreeSet<String>,
+) -> Result<
+    Option<(
+        Option<agent_state::ActiveAgentState>,
+        agent_state::DisplayAgentStates,
+    )>,
+> {
+    let dismissals = match state
+        .database
+        .dismissed_agent_messages_at_revision(revision)?
+    {
+        RevisionChecked::Matched { value, .. } => value,
+        RevisionChecked::Mismatch { .. } => return Ok(None),
+    };
+    let mut excluded = acknowledgements.clone();
+    let now = OffsetDateTime::now_utc();
+    // Refill the bounded tray after filtering, so closed attention messages
+    // cannot occupy its eight slots or leave the pet reacting to hidden work.
+    for _ in 0..=events.len() {
+        let mut active = agent_state::select_active_agent_state_with_acknowledgements(
+            behavior, events, now, &excluded,
+        );
+        let mut display = agent_state::select_display_agent_states_with_limit(
+            behavior,
+            events,
+            now,
+            &excluded,
+            if dismissals.is_empty() {
+                SNAPSHOT_OVERLAY_EVENT_LIMIT
+            } else {
+                events.len()
+            },
+        );
+        let mut filtered = false;
+        for session in display.states.iter_mut().chain(active.iter_mut()) {
+            if !hydrate_agent_session_display(state, revision, session)? {
+                return Ok(None);
+            }
+            if dismissals.contains(&session.dismissal_id()) {
+                filtered |=
+                    excluded.insert(agent_state::session_acknowledgement_id(&session.event));
+            }
+        }
+        if !filtered {
+            display.omitted_count += display
+                .states
+                .len()
+                .saturating_sub(SNAPSHOT_OVERLAY_EVENT_LIMIT);
+            display.states.truncate(SNAPSHOT_OVERLAY_EVENT_LIMIT);
+            return Ok(Some((active, display)));
+        }
+    }
+    Err(PetCoreError::Conflict(
+        "message dismissal projection did not converge".to_string(),
+    ))
+}
+
 fn canonical_agent_state(
     state: &CoreState,
     behavior: &BehaviorSettings,
 ) -> Result<Option<agent_state::ActiveAgentState>> {
-    let mut latest_consistent_event_state = None;
     for _ in 0..MAX_SNAPSHOT_REVISION_RETRIES {
         let snapshot = state.snapshot_sequenced_events()?;
         let state_revision = snapshot.state_revision;
@@ -2092,27 +2153,23 @@ fn canonical_agent_state(
                 continue;
             }
         };
-        let mut active = agent_state::select_active_agent_state_with_acknowledgements(
+        if let Some((active, _)) = project_agent_states(
+            state,
             behavior,
-            events.as_slice(),
-            OffsetDateTime::now_utc(),
+            state_revision,
+            &events,
             &acknowledged_session_activations,
-        );
-        latest_consistent_event_state = active.clone();
-        if let Some(active) = &mut active {
-            if !hydrate_agent_session_display(state, state_revision, active)? {
-                thread::yield_now();
-                continue;
-            }
+        )? {
+            return Ok(active);
         }
-        return Ok(active);
+        thread::yield_now();
     }
     // Event ingestion already committed successfully. Under a write burst,
-    // returning the latest event-only state is honest and keeps Hook delivery
-    // successful; a later state snapshot hydrates messages once the revision
-    // is stable. Never turn a committed Agent event into an RPC failure merely
-    // because optional display enrichment raced another event.
-    Ok(latest_consistent_event_state)
+    // keep Hook delivery successful even when optional display enrichment
+    // races another event.
+    // An unhydrated fallback could resurrect a dismissed message. The next
+    // consistent snapshot supplies the reaction once the write burst settles.
+    Ok(None)
 }
 
 fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
@@ -2158,37 +2215,19 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
             .iter()
             .map(agent_state::overlay_event_projection)
             .collect::<Vec<_>>();
-        let mut active_agent_state = agent_state::select_active_agent_state_with_acknowledgements(
+        let Some((mut active_agent_state, display_agent_states)) = project_agent_states(
+            state,
             &behavior,
-            sequenced_events.as_slice(),
-            OffsetDateTime::now_utc(),
+            snapshot_state_revision,
+            &sequenced_events,
             &acknowledged_session_activations,
-        );
-        if let Some(active) = &mut active_agent_state {
-            if !hydrate_agent_session_display(state, snapshot_state_revision, active)? {
-                thread::yield_now();
-                continue;
-            }
-        }
-        let display_agent_states = agent_state::select_display_agent_states_with_acknowledgements(
-            &behavior,
-            sequenced_events.as_slice(),
-            OffsetDateTime::now_utc(),
-            &acknowledged_session_activations,
-        );
-        let active_agent_sessions_omitted_count = display_agent_states.omitted_count;
-        let mut active_agent_sessions = display_agent_states.states;
-        let mut display_revision_changed = false;
-        for session in &mut active_agent_sessions {
-            if !hydrate_agent_session_display(state, snapshot_state_revision, session)? {
-                display_revision_changed = true;
-                break;
-            }
-        }
-        if display_revision_changed {
+        )?
+        else {
             thread::yield_now();
             continue;
-        }
+        };
+        let active_agent_sessions_omitted_count = display_agent_states.omitted_count;
+        let mut active_agent_sessions = display_agent_states.states;
         agent_state::assign_anonymous_session_aliases(&mut active_agent_sessions);
         if let Some(active) = &mut active_agent_state {
             active.anonymous_session_alias = active_agent_sessions

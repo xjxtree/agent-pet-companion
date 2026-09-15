@@ -33,6 +33,280 @@ fn timestamp(seconds_ago: i64) -> String {
         .unwrap()
 }
 
+#[test]
+fn manual_message_dismissal_survives_restart_for_every_source_and_status() {
+    for source in ["codex", "claude_code", "pi", "opencode", "dsh"] {
+        for event_type in [
+            "start", "thinking", "plan", "tool", "waiting", "done", "failed",
+        ] {
+            let (temp, state) = ready();
+            ingest_source_payload(
+                &state,
+                source,
+                "visible-message",
+                "session",
+                event_type,
+                &timestamp(1),
+                json!({"session_open": true, "session_active": true,
+                    "message_role": "assistant", "message_content": "A visible reply"}),
+            );
+            let before = snapshot(&state);
+            let token = before["active_agent_sessions"][0]["dismissal_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("missing dismissal for {source}/{event_type}: {before}"));
+            let params = json!({"dismissal_id": token});
+            let result =
+                handle_request(&state, request("agent.session.dismiss", params.clone())).unwrap();
+            assert_eq!(result["changed"], true);
+            assert_eq!(
+                handle_request(&state, request("agent.session.dismiss", params)).unwrap()
+                    ["changed"],
+                false
+            );
+            let after = snapshot(&state);
+            assert_eq!(
+                after["active_agent_sessions"],
+                json!([]),
+                "{source}/{event_type}"
+            );
+            assert!(after["active_agent_state"].is_null());
+            assert_eq!(
+                after["recent_events"].as_array().unwrap().len(),
+                1,
+                "history is retained"
+            );
+            drop(state);
+            let restarted = CoreState::new(AppPaths::new(temp.path().join("home")));
+            restarted.ensure_ready().unwrap();
+            assert_eq!(
+                snapshot(&restarted)["active_agent_sessions"],
+                json!([]),
+                "restart {source}/{event_type}"
+            );
+        }
+    }
+}
+
+#[test]
+fn manual_message_dismissal_refills_tray_and_ignores_replays_but_allows_new_reply() {
+    let (_temp, state) = ready();
+    for index in 0..10 {
+        ingest_source_payload(
+            &state,
+            "claude_code",
+            &format!("failure-{index}"),
+            &format!("session-{index}"),
+            "failed",
+            &timestamp(30 - index),
+            json!({"session_open": true, "session_active": false,
+                "message_role": "assistant", "message_content": "Failed to authenticate"}),
+        );
+    }
+    let before = snapshot(&state);
+    assert_eq!(before["active_agent_sessions"].as_array().unwrap().len(), 8);
+    assert_eq!(before["active_agent_sessions_omitted_count"], 2);
+    for session in before["active_agent_sessions"].as_array().unwrap() {
+        handle_request(
+            &state,
+            request(
+                "agent.session.dismiss",
+                json!({"dismissal_id": session["dismissal_id"]}),
+            ),
+        )
+        .unwrap();
+    }
+    let refilled = snapshot(&state);
+    assert_eq!(
+        refilled["active_agent_sessions"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(refilled["active_agent_sessions_omitted_count"], 0);
+    for session in refilled["active_agent_sessions"].as_array().unwrap() {
+        handle_request(
+            &state,
+            request(
+                "agent.session.dismiss",
+                json!({"dismissal_id": session["dismissal_id"]}),
+            ),
+        )
+        .unwrap();
+    }
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "replayed-failure",
+        "session-0",
+        "failed",
+        &timestamp(10),
+        json!({"session_open": true, "session_active": false,
+            "message_role": "assistant", "message_content": "Failed to authenticate"}),
+    );
+    assert_eq!(snapshot(&state)["active_agent_sessions"], json!([]));
+    let new_reply = ingest_source_payload(
+        &state,
+        "claude_code",
+        "new-reply",
+        "session-0",
+        "done",
+        &timestamp(1),
+        json!({"source_event": "Stop", "session_open": true, "session_active": false,
+            "message_role": "assistant", "message_content": "Authentication recovered"}),
+    );
+    assert!(new_reply["active_agent_state"].is_object());
+    assert_eq!(
+        snapshot(&state)["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn manual_message_dismissal_tracks_body_across_tools_and_late_requests() {
+    let (_temp, state) = ready();
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "prompt",
+        "session",
+        "start",
+        &timestamp(20),
+        json!({"source_event": "UserPromptSubmit", "session_active": true,
+            "message_role": "user", "message_content": "Please work"}),
+    );
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "reply",
+        "session",
+        "thinking",
+        &timestamp(15),
+        json!({"session_active": true, "message_role": "assistant", "message_content": "Checking the files"}),
+    );
+    let first = snapshot(&state)["active_agent_sessions"][0].clone();
+    let close = || {
+        handle_request(
+            &state,
+            request(
+                "agent.session.dismiss",
+                json!({"dismissal_id": first["dismissal_id"]}),
+            ),
+        )
+        .unwrap()
+    };
+    close();
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "tool",
+        "session",
+        "tool",
+        &timestamp(10),
+        json!({"source_event": "PreToolUse", "session_active": true, "tool_name": "Read"}),
+    );
+    assert_eq!(
+        snapshot(&state)["active_agent_sessions"],
+        json!([]),
+        "tool changes cannot revive the same reply"
+    );
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "reply-2",
+        "session",
+        "thinking",
+        &timestamp(5),
+        json!({"session_active": true, "message_role": "assistant", "message_content": "Files checked"}),
+    );
+    let second = snapshot(&state)["active_agent_sessions"][0].clone();
+    assert_ne!(second["dismissal_id"], first["dismissal_id"]);
+    close(); // A close captured before the new reply arrived must not hide that reply.
+    assert_eq!(
+        snapshot(&state)["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    handle_request(
+        &state,
+        request(
+            "agent.session.dismiss",
+            json!({"dismissal_id": second["dismissal_id"]}),
+        ),
+    )
+    .unwrap();
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "prompt-2",
+        "session",
+        "start",
+        &timestamp(2),
+        json!({"source_event": "UserPromptSubmit", "session_active": true,
+            "message_role": "user", "message_content": "Please continue"}),
+    );
+    assert_eq!(
+        snapshot(&state)["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "new activation can show replies again"
+    );
+}
+
+#[test]
+fn manual_message_dismissal_validates_typed_opaque_identity() {
+    let (_temp, state) = ready();
+    for params in [
+        json!({}),
+        json!({"dismissal_id": "session-secret"}),
+        json!({"dismissal_id": format!("msg-{}", "a".repeat(65))}),
+        json!({"dismissal_id": format!("msg-{}", "A".repeat(64))}),
+        json!({"dismissal_id": format!("msg-{}", "a".repeat(64)), "all": true}),
+    ] {
+        assert!(handle_request(&state, request("agent.session.dismiss", params)).is_err());
+    }
+}
+
+#[test]
+fn manual_message_dismissal_excludes_closed_rows_below_the_visible_limit() {
+    let (_temp, state) = ready();
+    ingest(
+        &state,
+        "old-failure",
+        "old-session",
+        "failed",
+        &timestamp(20),
+    );
+    let old = snapshot(&state)["active_agent_sessions"][0].clone();
+    handle_request(
+        &state,
+        request(
+            "agent.session.dismiss",
+            json!({"dismissal_id": old["dismissal_id"]}),
+        ),
+    )
+    .unwrap();
+    for index in 0..8 {
+        ingest(
+            &state,
+            &format!("fresh-{index}"),
+            &format!("fresh-session-{index}"),
+            "failed",
+            &timestamp(10 - index),
+        );
+    }
+    let current = snapshot(&state);
+    assert_eq!(
+        current["active_agent_sessions"].as_array().unwrap().len(),
+        8
+    );
+    assert_eq!(current["active_agent_sessions_omitted_count"], 0);
+}
+
 fn projected_event_id(value: &str) -> String {
     projected_identity("event", "evt", value)
 }

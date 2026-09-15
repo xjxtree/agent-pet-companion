@@ -301,6 +301,7 @@ public struct ActiveAgentState: Codable, Equatable, Sendable {
     public var sessionUserMessage: AgentSessionDisplayMessage?
     public var sessionActivity: AgentSessionActivity?
     public var acknowledgementID: String? = nil
+    public var dismissalID: String? = nil
     public var overlayDisplay: AgentOverlayDisplay? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -323,6 +324,7 @@ public struct ActiveAgentState: Codable, Equatable, Sendable {
         case sessionUserMessage = "session_user_message"
         case sessionActivity = "session_activity"
         case acknowledgementID = "acknowledgement_id"
+        case dismissalID = "dismissal_id"
         case overlayDisplay = "overlay_display"
     }
 }

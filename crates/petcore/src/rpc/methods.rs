@@ -140,6 +140,11 @@ pub(super) const RPC_METHODS: &[RpcMethodSpec] = &[
         allowed_params: &["acknowledgement_id"],
     },
     RpcMethodSpec {
+        method: "agent.session.dismiss",
+        owner: RpcMethodOwner::Agents,
+        allowed_params: &["dismissal_id"],
+    },
+    RpcMethodSpec {
         method: "events.recent",
         owner: RpcMethodOwner::Agents,
         allowed_params: &["limit"],

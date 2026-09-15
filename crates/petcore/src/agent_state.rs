@@ -153,7 +153,7 @@ impl Serialize for ActiveAgentState {
         let session_id = self.session_id.as_deref().map(opaque_session_id);
         let event = overlay_event_projection(&self.event);
         let acknowledgement_id = session_acknowledgement_id(&self.event);
-        let mut state = serializer.serialize_struct("ActiveAgentState", 18)?;
+        let mut state = serializer.serialize_struct("ActiveAgentState", 19)?;
         state.serialize_field("state", &self.state)?;
         state.serialize_field("official_status", &self.official_status)?;
         state.serialize_field("source", &self.source)?;
@@ -170,10 +170,50 @@ impl Serialize for ActiveAgentState {
         state.serialize_field("session_user_message", &self.session_user_message)?;
         state.serialize_field("session_activity", &self.session_activity)?;
         state.serialize_field("acknowledgement_id", &acknowledgement_id)?;
+        state.serialize_field("dismissal_id", &self.dismissal_id())?;
         state.serialize_field("event", &event)?;
         state.serialize_field("overlay_display", &self.overlay_display)?;
         state.end()
     }
+}
+
+impl ActiveAgentState {
+    /// A close belongs to the displayed message, not its transient tool/status
+    /// event. Replayed text in the same user activation keeps the identity;
+    /// a different reply or a new user activation gets its own close identity.
+    pub fn dismissal_id(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"agent-pet-companion/message-dismissal/v1\0");
+        let body = if let Some(message) = &self.session_message {
+            format!("message:{}:{}", message.role, message.content)
+        } else if let Some(activity) = &self.session_activity {
+            format!(
+                "activity:{}:{}",
+                activity.kind,
+                activity.content.as_deref().unwrap_or("")
+            )
+        } else {
+            format!("status:{}", enum_name(self.overlay_display.summary_kind))
+        };
+        for component in [
+            enum_name(self.source),
+            normalized_session_key(self.session_id.as_deref()),
+            self.session_activated_at.clone().unwrap_or_default(),
+            body,
+        ] {
+            digest.update(component.as_bytes());
+            digest.update([0]);
+        }
+        format!("msg-{}", hex::encode(digest.finalize()))
+    }
+}
+
+pub fn is_valid_message_dismissal_id(value: &str) -> bool {
+    value.len() == 68
+        && value.starts_with("msg-")
+        && value[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Converts a stored/audited event to the compact embedded event shape used by
@@ -293,6 +333,22 @@ pub fn select_display_agent_states_with_acknowledgements(
     now: OffsetDateTime,
     acknowledged_session_activations: &BTreeSet<String>,
 ) -> DisplayAgentStates {
+    select_display_agent_states_with_limit(
+        behavior,
+        candidates,
+        now,
+        acknowledged_session_activations,
+        MAX_DISPLAY_AGENT_SESSIONS,
+    )
+}
+
+pub(crate) fn select_display_agent_states_with_limit(
+    behavior: &BehaviorSettings,
+    candidates: &[SequencedAgentEvent],
+    now: OffsetDateTime,
+    acknowledged_session_activations: &BTreeSet<String>,
+    limit: usize,
+) -> DisplayAgentStates {
     if !behavior.enabled {
         return DisplayAgentStates {
             states: Vec::new(),
@@ -340,10 +396,10 @@ pub fn select_display_agent_states_with_acknowledgements(
                 )
             })
     });
-    let omitted_count = visible.len().saturating_sub(MAX_DISPLAY_AGENT_SESSIONS);
+    let omitted_count = visible.len().saturating_sub(limit);
     let states = visible
         .into_iter()
-        .take(MAX_DISPLAY_AGENT_SESSIONS)
+        .take(limit)
         .map(|candidate| active_state_from_candidate(behavior, candidate, candidates))
         .collect();
     DisplayAgentStates {

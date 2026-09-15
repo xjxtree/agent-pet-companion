@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "overlay",
+  "summary_en": "Keep manually closed Agent messages hidden across tray reopening and App/PetCore restarts, regardless of status; new replies remain eligible to appear.",
+  "summary_zh": "所有状态的 Agent 消息手动关闭后，重新展开列表或重启 App/PetCore 均不再显示该消息；后续新回复仍可显示。"
+}
