@@ -42,7 +42,7 @@ The current schema is version 7. PetCore enables WAL, foreign keys, secure delet
 | `agent_session_aliases` | Stable, content-free aliases for retained anonymous sessions |
 | `privacy_migrations` | Recoverable privacy-scrub state, not product history |
 | `pet_asset_validation` | Cached package/runtime-asset validation result; explicit repair bypasses it |
-| `settings` | Versioned behavior, onboarding, placement/intent, completion acknowledgement, and connector state |
+| `settings` | Versioned behavior, onboarding, placement/intent, completion acknowledgement, manual message dismissal, and connector state |
 | `product_convergence_receipt` | Exact-build typed five-Agent convergence receipt |
 | `state_revision` | Monotonic revision advanced by durable state mutations |
 
@@ -103,11 +103,13 @@ Supported sources are `codex`, `claude_code`, `pi`, `opencode`, and `dsh`. Persi
 
 `apc.agent-event.v1` accepts only bounded fields needed for identity, ordering, navigation, and display. Session title, first/latest user message, Agent message, and selected scalar activity detail are distinct stored fields. The bubble-body projection chooses the newest Agent message or explicit thinking/plan content and retains it across user, tool, and lifecycle events; those other events continue to own context, semantic state, and the status indicator but never replace body copy. Activity normalization may retain bounded reasoning, commands, tool input/output, and errors, but never stringifies arbitrary host objects or exports credential-shaped containers, headers, complete environments, or transcripts. String ceilings are enforced as UTF-8 bytes by both schema and PetCore.
 
-`state.snapshot` exposes opaque domain-separated identities, bounded session fields, closed summary kind, animation identity, completion acknowledgement identity, and validated navigation capability. Only a routable Codex App UUID may cross separately for exact ChatGPT/Codex navigation. Unknown or mismatched targets fail closed.
+`state.snapshot` exposes opaque domain-separated identities, bounded session fields, closed summary kind, animation identity, completion acknowledgement identity, message dismissal identity, and validated navigation capability. Only a routable Codex App UUID may cross separately for exact ChatGPT/Codex navigation. Unknown or mismatched targets fail closed.
 
-Ordinary `start`, `thinking`, `plan`, `tool`, and `done` activity uses bounded leases; `waiting` and `failed` persist until a newer session event resolves them. At most eight concrete sessions are projected, with an omitted count for the remainder. A completion is hidden only after its declared destination opens and PetCore accepts the opaque acknowledgement. Repeated terminal tails in the same activity epoch remain aliases of that acknowledgement; a genuine later activation is new work.
+Ordinary `start`, `thinking`, `plan`, `tool`, and `done` activity uses bounded leases; `waiting` and `failed` persist until a newer session event resolves them. At most eight concrete sessions are projected, with an omitted count for the remainder. Automatic completion acknowledgement requires its declared destination to open and PetCore to accept the opaque acknowledgement. Repeated terminal tails in the same activity epoch remain aliases of that acknowledgement; a genuine later activation is new work.
 
-Group disclosure, flat-list stable slots, manual bubble hiding, and transient navigation errors are App presentation state. The [connector contract](../integrations/agent-connectors.md) owns host-specific mapping and routing.
+Explicit message close is separate from navigation acknowledgement and applies to every status and Agent. `agent.session.dismiss` persists a typed opaque `msg-` identity in the PetCore-owned `agent_message_dismissals` setting (`apc.agent-message-dismissals.v1`). The identity binds source, session, user activation, and displayed message/activity body (or status when no body exists). Replayed content and tool/lifecycle changes cannot revive the same closed body; a different reply or later user activation may appear. Filtering precedes the eight-session display limit and also removes the hidden pet reaction. Closing retains event history and survives App/PetCore restarts. Writes are idempotent, accept a captured identity even after a newer reply arrives, and retain up to 10,000 identities without eviction; a failed write leaves the card visible. / 手动关闭独立于打开会话后的完成确认，适用于所有 Agent 和消息状态。PetCore 通过类型化不透明消息标识持久保存关闭记录；标识绑定来源、会话、用户激活及显示正文（无正文时绑定状态）。重复正文或工具、生命周期变化不会恢复已关闭消息，不同的新回复或新一轮用户请求仍可显示。关闭过滤先于八条会话上限计算，也取消隐藏消息对应的宠物反应；事件历史保留，App/PetCore 重启后仍生效。写入可重试，迟到的旧消息关闭不会误关新回复；最多保存 10,000 个标识且不淘汰旧记录，保存失败时卡片保持可见。
+
+Group disclosure, flat-list stable slots, temporary tray collapse, and transient navigation errors are App presentation state. The [connector contract](../integrations/agent-connectors.md) owns host-specific mapping and routing.
 
 ## Versioned contracts
 

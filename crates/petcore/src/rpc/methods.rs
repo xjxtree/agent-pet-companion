@@ -140,6 +140,11 @@ pub(super) const RPC_METHODS: &[RpcMethodSpec] = &[
         allowed_params: &["acknowledgement_id"],
     },
     RpcMethodSpec {
+        method: "agent.session.dismiss",
+        owner: RpcMethodOwner::Agents,
+        allowed_params: &["dismissal_id"],
+    },
+    RpcMethodSpec {
         method: "events.recent",
         owner: RpcMethodOwner::Agents,
         allowed_params: &["limit"],
@@ -355,7 +360,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total, "duplicate method in registry");
         assert_eq!(
-            total, 57,
+            total, 58,
             "method inventory changed; update this test deliberately"
         );
     }

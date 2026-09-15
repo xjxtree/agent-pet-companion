@@ -23,6 +23,13 @@ pub(super) fn handle(state: &CoreState, request: RpcRequest) -> Result<Value> {
         }
         "agent.parse_warnings" => record_agent_parse_warnings(state, &request.params),
         "agent.session.acknowledge" => acknowledge_agent_session(state, &request.params),
+        "agent.session.dismiss" => {
+            let dismissal_id = required_string(&request.params, "dismissal_id")?;
+            let changed = state.database.dismiss_agent_message(&dismissal_id)?;
+            Ok(
+                json!({"ok": true, "dismissed": true, "changed": changed, "dismissal_id": dismissal_id}),
+            )
+        }
         "events.recent" => {
             let limit = optional_u64_param(&request.params, "limit")?
                 .unwrap_or(20)

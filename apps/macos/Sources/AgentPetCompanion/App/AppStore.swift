@@ -227,6 +227,7 @@ private struct OverlaySessionNavigationNoticeRecord: Equatable {
 private struct OverlaySessionProjectionIdentity: Equatable, Sendable {
     let eventID: String
     let acknowledgementID: String?
+    let dismissalID: String?
 }
 
 enum AgentSessionRouter {
@@ -732,6 +733,7 @@ final class AppStore: ObservableObject {
     /// placement edge actually flips, never for ordinary drag samples.
     @Published private(set) var overlayBubbleAnchorDirection: OverlayBubbleAnchorDirection = .above
     @Published var overlayDismissedBubbleEventIDs: Set<String> = []
+    private var overlayDismissedMessageIDs: [String: String] = [:]
     @Published private var overlaySessionNavigationNotices:
         [String: OverlaySessionNavigationNoticeRecord] = [:]
     private var overlaySessionProjectionIdentities:
@@ -1679,7 +1681,8 @@ final class AppStore: ObservableObject {
         let capturedIdentity = overlaySessionProjectionIdentities[session.id]
             ?? OverlaySessionProjectionIdentity(
                 eventID: session.eventID,
-                acknowledgementID: session.acknowledgementID
+                acknowledgementID: session.acknowledgementID,
+                dismissalID: nil
             )
         let actionSession = currentOverlayActionSession(
             stableID: session.id,
@@ -1745,7 +1748,7 @@ final class AppStore: ObservableObject {
                 else {
                     return
                 }
-                dismissOverlayBubble(eventID: actionSession.id)
+                hideOverlayBubblesLocally(eventIDs: [actionSession.id])
             }
         }
     }
@@ -2829,7 +2832,8 @@ final class AppStore: ObservableObject {
                     ),
                     OverlaySessionProjectionIdentity(
                         eventID: state.event.id,
-                        acknowledgementID: state.acknowledgementID
+                        acknowledgementID: state.acknowledgementID,
+                        dismissalID: state.dismissalID
                     )
                 )
             },
@@ -2911,7 +2915,23 @@ final class AppStore: ObservableObject {
         let hasNewOverlayActivation = !newlyActivatedDismissalIDs.isEmpty
         if snapshot.behavior.enabled {
             var nextDismissedBubbleEventIDs = overlayDismissedBubbleEventIDs
-            nextDismissedBubbleEventIDs.subtract(newlyActivatedDismissalIDs)
+            var reopenIDs = newlyActivatedDismissalIDs
+            for state in nextActiveAgentSessions {
+                let id = OverlaySessionContent.stableID(
+                    source: state.source,
+                    sessionID: state.sessionID ?? state.event.sessionID,
+                    anonymousSessionAlias: state.anonymousSessionAlias,
+                    fallbackEventID: state.event.id
+                )
+                guard let dismissed = overlayDismissedMessageIDs[id] else { continue }
+                if dismissed == state.dismissalID {
+                    reopenIDs.remove(id)
+                } else {
+                    nextDismissedBubbleEventIDs.remove(id)
+                    overlayDismissedMessageIDs[id] = nil
+                }
+            }
+            nextDismissedBubbleEventIDs.subtract(reopenIDs)
             if overlayDismissedBubbleEventIDs != nextDismissedBubbleEventIDs {
                 overlayDismissedBubbleEventIDs = nextDismissedBubbleEventIDs
             }
@@ -6257,11 +6277,54 @@ final class AppStore: ObservableObject {
     }
 
     func dismissOverlayBubble(eventID: String) {
-        overlayDismissedBubbleEventIDs.insert(eventID)
-        overlayController.updateLayout(animateBubble: true)
+        dismissOverlayBubble(eventIDs: [eventID])
     }
 
     func dismissOverlayBubble(eventIDs: [String]) {
+        let captured = activeAgentSessions.compactMap { state -> (String, String)? in
+            let id = OverlaySessionContent.stableID(
+                source: state.source,
+                sessionID: state.sessionID ?? state.event.sessionID,
+                anonymousSessionAlias: state.anonymousSessionAlias,
+                fallbackEventID: state.event.id
+            )
+            guard eventIDs.contains(id),
+                  let dismissalID = overlaySessionProjectionIdentities[id]?.dismissalID
+            else { return nil }
+            return (id, dismissalID)
+        }
+        // Older snapshots lack the persisted message identity. Keep the legacy
+        // local presentation path during runtime handoff; current Core always
+        // supplies an identity for every concrete message and status.
+        let persistentIDs = Set(captured.map { $0.0 })
+        hideOverlayBubblesLocally(eventIDs: eventIDs.filter { !persistentIDs.contains($0) })
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for (id, dismissalID) in captured {
+                do {
+                    let value = try await requestPetCore(
+                        method: "agent.session.dismiss",
+                        params: ["dismissal_id": dismissalID]
+                    )
+                    guard let result = value as? [String: Any],
+                          result["dismissed"] as? Bool == true,
+                          result["dismissal_id"] as? String == dismissalID
+                    else { throw PetCoreClientError.invalidResponse }
+                    let current = overlaySessionProjectionIdentities[id]
+                    // A late close response must never hide a newer reply.
+                    guard current == nil || current?.dismissalID == dismissalID else { continue }
+                    overlayDismissedMessageIDs[id] = dismissalID
+                    hideOverlayBubblesLocally(eventIDs: [id])
+                } catch {
+                    // The RPC logs the failure. Leave this card visible so a
+                    // failed write is not presented as a successful close.
+                    continue
+                }
+            }
+        }
+    }
+
+    private func hideOverlayBubblesLocally(eventIDs: [String]) {
         overlayDismissedBubbleEventIDs.formUnion(eventIDs)
         overlayController.updateLayout(animateBubble: true)
     }
@@ -7103,6 +7166,7 @@ final class AppStore: ObservableObject {
             || method == "onboarding.update"
             || method == "overlay.placement.update"
             || method == "agent.session.acknowledge"
+            || method == "agent.session.dismiss"
             || method == "diagnostics.export"
             || method == "product.convergence.update"
     }
@@ -7113,6 +7177,7 @@ final class AppStore: ObservableObject {
              "onboarding.update",
              "overlay.placement.update",
              "agent.session.acknowledge",
+             "agent.session.dismiss",
              "pet.activate",
              "pet.delete",
              "pet.assets.repair",

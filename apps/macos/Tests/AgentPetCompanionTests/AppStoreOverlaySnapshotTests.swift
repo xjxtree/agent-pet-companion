@@ -8,6 +8,120 @@ import Testing
 struct AppStoreOverlaySnapshotTests {
     @MainActor
     @Test
+    func manualClosePersistsEveryStatusAndKeepsReplayedMessagesHidden() async throws {
+        var requests: [String] = []
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, params, _ in
+                guard method == "agent.session.dismiss" else { return [:] }
+                let token = try #require((params as? [String: Any])?["dismissal_id"] as? String)
+                requests.append(token)
+                return ["dismissed": true, "dismissal_id": token]
+            }
+        )
+        let states = [AgentEventKind.start, .thinking, .plan, .tool, .waiting, .done, .failed]
+            .enumerated().map { index, kind in
+                var state = makeState(source: .claudeCode, session: "close-\(index)", event: kind, activatedSecond: index)
+                state.dismissalID = "msg-" + String(repeating: String(index), count: 64)
+                return state
+            }
+        try store.applyStateSnapshot(messageSnapshot(states))
+        store.dismissOverlayBubble(eventIDs: states.map(messageStableID))
+        for _ in 0..<1_000 where store.overlayDismissedBubbleEventIDs.count != states.count { await Task.yield() }
+        #expect(requests.count == states.count)
+        #expect(store.overlayAvailableBubbleContents.isEmpty)
+        store.toggleOverlayBubble()
+        store.toggleOverlayBubble()
+        try store.applyStateSnapshot(messageSnapshot([]))
+        var replay = states
+        replay[6].event.id = "replayed-failure-event"
+        try store.applyStateSnapshot(messageSnapshot(replay))
+        #expect(store.overlayAvailableBubbleContents.isEmpty)
+        replay[6].dismissalID = "msg-" + String(repeating: "f", count: 64)
+        try store.applyStateSnapshot(messageSnapshot(replay))
+        #expect(!store.overlayDismissedBubbleEventIDs.contains(messageStableID(replay[6])))
+        #expect(store.overlayAvailableBubbleContents.flatMap(\.sessions).count == 1)
+    }
+
+    @MainActor
+    @Test
+    func manualCloseWaitsForPersistenceAndCannotHideANewerReply() async throws {
+        let gate = OverlayPlacementRequestGate()
+        var finished = false
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, params, _ in
+                guard method == "agent.session.dismiss" else { return [:] }
+                let token = try #require((params as? [String: Any])?["dismissal_id"] as? String)
+                await gate.suspend()
+                finished = true
+                return ["dismissed": true, "dismissal_id": token]
+            }
+        )
+        var state = makeState(source: .codex, session: "close-race", event: .failed, activatedSecond: 1)
+        state.dismissalID = "msg-" + String(repeating: "a", count: 64)
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        store.dismissOverlayBubble(eventID: messageStableID(state))
+        await gate.waitUntilEntered()
+        #expect(!store.overlayDismissedBubbleEventIDs.contains(messageStableID(state)))
+        state.dismissalID = "msg-" + String(repeating: "b", count: 64)
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        await gate.resume()
+        for _ in 0..<1_000 where !finished { await Task.yield() }
+        await Task.yield()
+        #expect(!store.overlayDismissedBubbleEventIDs.contains(messageStableID(state)))
+        #expect(!store.overlayAvailableBubbleContents.isEmpty)
+    }
+
+    @MainActor
+    @Test
+    func failedManualCloseDoesNotPretendTheMessageWasSaved() async throws {
+        var requested = false
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, _, _ in
+                guard method == "agent.session.dismiss" else { return [:] }
+                requested = true
+                throw NSError(domain: "DismissalTest", code: 1)
+            }
+        )
+        var state = makeState(source: .pi, session: "close-failure", event: .waiting, activatedSecond: 1)
+        state.dismissalID = "msg-" + String(repeating: "a", count: 64)
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        store.dismissOverlayBubble(eventID: messageStableID(state))
+        for _ in 0..<1_000 where !requested { await Task.yield() }
+        #expect(requested)
+        #expect(!store.overlayDismissedBubbleEventIDs.contains(messageStableID(state)))
+        #expect(!store.overlayAvailableBubbleContents.isEmpty)
+    }
+
+    private func messageStableID(_ state: ActiveAgentState) -> String {
+        OverlaySessionContent.stableID(
+            source: state.source,
+            sessionID: state.sessionID ?? state.event.sessionID,
+            anonymousSessionAlias: state.anonymousSessionAlias,
+            fallbackEventID: state.event.id
+        )
+    }
+
+    private func messageSnapshot(_ states: [ActiveAgentState]) throws -> [String: Any] {
+        [
+            "revision": UUID().uuidString,
+            "overlay_placement_revision": "0",
+            "behavior": try jsonObject(BehaviorSettings(sessionGroupDisplay: .expanded)),
+            "behavior_revision": "1", "pets": [],
+            "active_agent_sessions": try jsonArray(states),
+            "active_agent_sessions_omitted_count": 0,
+            "overlay_visibility": try jsonObject(OverlayVisibility(petVisible: true, statusBubbleVisible: true)),
+            "events": [], "recent_events": [], "connections": [],
+        ]
+    }
+
+    @MainActor
+    @Test
     func activeAgentStateUsesAOneSecondDisplayRefreshBudget() {
         #expect(AppStore.stateWaitTimeoutMilliseconds(
             generationIsActive: false,

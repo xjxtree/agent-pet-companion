@@ -44,6 +44,8 @@ At bootstrap, ordinary windows are visible and interactive immediately with the 
 
 ## Overlay and state delivery
 
+The bubble close button persists the displayed message's opaque identity through `agent.session.dismiss` before hiding it locally. Closing an expanded group applies the same operation to each represented message. Reopening the tray or restarting the App does not clear these records; a delayed response cannot hide a newer reply. Temporary tray collapse remains presentation-only. / 气泡关闭按钮先通过 `agent.session.dismiss` 持久保存当前消息标识，再从界面隐藏；关闭展开的分组对各条消息执行相同操作。重新展开列表或重启 App 不会清除关闭记录，迟到的响应不能关闭后来收到的新回复。临时收起列表仍仅影响展示。
+
 The App reads a consistent `state.snapshot`, then waits with `state.wait(after_revision, timeout_ms)`. `state_revision` is a decimal string and changes only with committed durable state. A process-local display epoch can also wake a wait when bounded host display hydration changes without inventing a database revision.
 
 `OverlayPlacementAuthority` is the only owner of presented pet position. A drag derives every presented frame, including auxiliary panels, from one captured absolute-screen anchor, never accumulated deltas or the previous frame. No other layout pass repositions the composition mid-gesture. The pet plus attached bubble/menu move as one root and commit one final hard-clamped placement without momentum, projection, or rubber-band. Persistence uses a latest-generation journal with bounded retry; stale snapshots, late acknowledgements, superseded responses, and failed saves cannot move the presented pet. Explicit external reset/reposition intent is revisioned and remains pending until the App acknowledges it.
@@ -85,7 +87,7 @@ Method families are:
 | Runtime | health and instance-bound shutdown |
 | Projection | snapshot and revision-based wait |
 | Configuration | behavior, onboarding, placement, client settings |
-| Events | normalized ingest, bounded history, completion acknowledgement |
+| Events | normalized ingest, bounded history, completion acknowledgement, manual message dismissal |
 | Pets | list/history, activate/delete, validate/import/seed/export, runtime-asset repair |
 | Generation | create/edit, in-place resume or explicit new-job retry, revision-based live message wait, reply/cancel, private recovery, bounded Maker history/detail, terminal history delete |
 | Connections | check, repair, refresh, test, uninstall, managed-component evidence |

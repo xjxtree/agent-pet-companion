@@ -1,6 +1,7 @@
 mod agents;
 mod connection;
 mod generation;
+mod message_dismissals;
 mod migrations;
 mod pets;
 mod settings;
