@@ -360,7 +360,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total, "duplicate method in registry");
         assert_eq!(
-            total, 57,
+            total, 58,
             "method inventory changed; update this test deliberately"
         );
     }
