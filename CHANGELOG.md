@@ -14,7 +14,7 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
-## [0.5.7] - 2026-09-16
+## [0.5.7] - 2026-09-17
 
 ### Fixed / 修复
 
@@ -22,6 +22,11 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 - Session navigation notices expire after three seconds and restore the latest message. Failed-session bubbles close persistently after successful navigation; unavailable routes still require manual close.
 
   会话跳转提示显示三秒后恢复最新消息。失败气泡成功跳转后持久关闭，无法跳转的气泡仍需手动关闭。
+
+<!-- apc-fragment:20260917-swift64-resource-compatibility -->
+- Restore localization, brand images, and bundled pets in Swift 6.4 builds, preserve strict compilation of desktop pet callbacks, and avoid a manifest output error during App packaging.
+
+  修复 Swift 6.4 构建中的本地化、品牌图片和内置宠物资源加载，保持桌宠回调通过严格编译检查，并避免 App 打包时的清单输出错误。
 
 ## [0.5.6] - 2026-09-15
 

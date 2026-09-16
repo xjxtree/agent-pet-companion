@@ -123,6 +123,10 @@ BUNDLED_PORTABLE_SKILL="$APP_RESOURCES/skills/agent-pet-maker"
 SOURCE_PORTABLE_SKILL="$ROOT_DIR/skills/agent-pet-maker"
 SOURCE_CODEX_PLUGIN_MANIFEST="$ROOT_DIR/plugins/codex/.codex-plugin/plugin.json"
 LOCALIZATION_BUNDLE="$APP_RESOURCES/AgentPetCompanion_AgentPetCompanion.bundle"
+# SwiftPM's native and swiftbuild engines emit flat and macOS-style bundles.
+if [[ -d "$LOCALIZATION_BUNDLE/Contents/Resources" ]]; then
+  LOCALIZATION_BUNDLE="$LOCALIZATION_BUNDLE/Contents/Resources"
+fi
 BUNDLE_ICON="$APP_RESOURCES/AgentPetCompanion.icns"
 SOURCE_ICON="$ROOT_DIR/logo/macos/AgentPetCompanionTransparent.icns"
 BUNDLED_BRAND_MARK="$LOCALIZATION_BUNDLE/AgentPetCompanionMark.png"

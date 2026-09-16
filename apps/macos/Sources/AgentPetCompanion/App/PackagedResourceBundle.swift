@@ -29,7 +29,9 @@ enum APCResourceBundle {
         return candidate
     }
 
-    static func resourceURL(_ relativePath: String) -> URL {
-        shared.bundleURL.appendingPathComponent(relativePath)
+    static func resourceURL(_ relativePath: String, in bundle: Bundle = shared) -> URL {
+        // SwiftPM emits either a flat bundle or a macOS Contents/Resources
+        // bundle, depending on the build system. Foundation resolves both.
+        (bundle.resourceURL ?? bundle.bundleURL).appendingPathComponent(relativePath)
     }
 }
