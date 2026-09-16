@@ -2635,6 +2635,14 @@ fn merge_cached_connection_statuses(
 }
 
 fn wait_for_state_change(state: &CoreState, params: &Value) -> Result<Value> {
+    wait_for_state_change_with_sleep(state, params, thread::sleep)
+}
+
+fn wait_for_state_change_with_sleep(
+    state: &CoreState,
+    params: &Value,
+    mut sleep: impl FnMut(Duration),
+) -> Result<Value> {
     let after_revision = required_string(params, "after_revision")?;
     let timeout_ms = bounded_u64_param(params, "timeout_ms", 3_000, 250, 30_000)?;
     let poll_interval = Duration::from_millis(120);
@@ -2659,7 +2667,7 @@ fn wait_for_state_change(state: &CoreState, params: &Value) -> Result<Value> {
         if Instant::now() >= deadline {
             return state_snapshot(state, false);
         }
-        thread::sleep(poll_interval);
+        sleep(poll_interval);
     }
 }
 
@@ -3759,29 +3767,29 @@ done
         let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
         state.ensure_ready().unwrap();
         let after_revision = state.database.state_revision().unwrap().to_string();
-        let display_epoch = Arc::clone(&state.codex_display_epoch);
-        let refresh = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(50));
-            display_epoch.fetch_add(1, Ordering::Release);
-        });
-
-        let started_at = Instant::now();
-        let result = wait_for_state_change(
+        let mut polls = 0;
+        let result = wait_for_state_change_with_sleep(
             &state,
             &json!({
                 "after_revision": after_revision,
                 "timeout_ms": 600
             }),
+            |interval| {
+                polls += 1;
+                assert_eq!(interval, Duration::from_millis(120));
+                assert_eq!(
+                    polls, 1,
+                    "completed display refresh did not wake the next poll"
+                );
+                state.codex_display_epoch.fetch_add(1, Ordering::Release);
+            },
         )
         .unwrap();
-        let elapsed = started_at.elapsed();
-        refresh.join().unwrap();
 
         assert_eq!(result["changed"], true);
-        assert!(
-            elapsed < Duration::from_millis(400),
-            "display refresh remained hidden until the state wait timeout: {elapsed:?}"
-        );
+        // Check the wakeup boundary directly, without timing unrelated SQLite
+        // reads and snapshot assembly on a loaded CI host.
+        assert_eq!(polls, 1);
     }
 
     fn skipped_refresh_result(source: AgentSource) -> connections::InstalledSourceRefreshResult {
