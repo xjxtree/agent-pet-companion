@@ -14,6 +14,15 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-09-16
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260916-bubble-navigation-lifecycle -->
+- Session navigation notices expire after three seconds and restore the latest message. Failed-session bubbles close persistently after successful navigation; unavailable routes still require manual close.
+
+  会话跳转提示显示三秒后恢复最新消息。失败气泡成功跳转后持久关闭，无法跳转的气泡仍需手动关闭。
+
 ## [0.5.6] - 2026-09-15
 
 ### Fixed / 修复
