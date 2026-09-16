@@ -220,6 +220,7 @@ enum AgentSessionOpenOutcome: Equatable, Sendable {
 }
 
 private struct OverlaySessionNavigationNoticeRecord: Equatable {
+    let generation = UUID()
     let identity: OverlaySessionProjectionIdentity
     let notice: OverlaySessionNavigationNotice
 }
@@ -619,6 +620,7 @@ final class AppStore: ObservableObject {
     typealias BundledPetSeeder = @MainActor () async -> Bool
     typealias BundledPetSeedSleeper = @Sendable (Duration) async throws -> Void
     typealias InitialAppearanceFallbackSleeper = @Sendable (Duration) async throws -> Void
+    typealias OverlayNavigationNoticeSleeper = @Sendable (Duration) async throws -> Void
     typealias OverlayPlacementRetrySleeper = @Sendable (Duration) async throws -> Void
     typealias AgentSessionRouteOpener = @MainActor (
         AgentSessionOpenRoute
@@ -736,6 +738,7 @@ final class AppStore: ObservableObject {
     private var overlayDismissedMessageIDs: [String: String] = [:]
     @Published private var overlaySessionNavigationNotices:
         [String: OverlaySessionNavigationNoticeRecord] = [:]
+    private var overlayNavigationNoticeTasks: [String: Task<Void, Never>] = [:]
     private var overlaySessionProjectionIdentities:
         [String: OverlaySessionProjectionIdentity] = [:]
     @Published private(set) var overlayAgentGroupExpansionOverrides: [AgentSource: Bool] = [:]
@@ -776,6 +779,7 @@ final class AppStore: ObservableObject {
     private let bundledPetSeederOverride: BundledPetSeeder?
     private let bundledPetSeedSleeper: BundledPetSeedSleeper
     private let initialAppearanceFallbackSleeper: InitialAppearanceFallbackSleeper
+    private let overlayNavigationNoticeSleeper: OverlayNavigationNoticeSleeper
     private let overlayPlacementRetrySleeper: OverlayPlacementRetrySleeper
     private let overlayPlacementJournalStore: OverlayPlacementJournalStore
     private let agentSessionRouteOpener: AgentSessionRouteOpener
@@ -927,6 +931,9 @@ final class AppStore: ObservableObject {
         initialAppearanceFallbackSleeper = { duration in
             try await Task.sleep(for: duration)
         }
+        overlayNavigationNoticeSleeper = { duration in
+            try await Task.sleep(for: duration)
+        }
         overlayPlacementRetrySleeper = { duration in
             try await Task.sleep(for: duration)
         }
@@ -985,6 +992,9 @@ final class AppStore: ObservableObject {
         initialAppearanceFallbackSleeper: @escaping InitialAppearanceFallbackSleeper = { duration in
             try await Task.sleep(for: duration)
         },
+        overlayNavigationNoticeSleeper: @escaping OverlayNavigationNoticeSleeper = { duration in
+            try await Task.sleep(for: duration)
+        },
         overlayPlacementRetrySleeper: @escaping OverlayPlacementRetrySleeper = { duration in
             try await Task.sleep(for: duration)
         },
@@ -1031,6 +1041,7 @@ final class AppStore: ObservableObject {
         bundledPetSeederOverride = bundledPetSeeder
         self.bundledPetSeedSleeper = bundledPetSeedSleeper
         self.initialAppearanceFallbackSleeper = initialAppearanceFallbackSleeper
+        self.overlayNavigationNoticeSleeper = overlayNavigationNoticeSleeper
         self.overlayPlacementRetrySleeper = overlayPlacementRetrySleeper
         self.overlayPlacementJournalStore = overlayPlacementJournalStore
         self.agentSessionRouteOpener = agentSessionRouteOpener
@@ -1737,7 +1748,11 @@ final class AppStore: ObservableObject {
                 sessionID: actionSession.id,
                 identity: capturedIdentity
             )
-            if actionSession.dismissesAfterActivation {
+            if actionSession.eventType == .failed {
+                // Failed turns have no completion acknowledgement. Persist the
+                // displayed message close so reopening the App cannot revive it.
+                dismissOverlayBubble(eventID: actionSession.id)
+            } else if actionSession.dismissesAfterActivation {
                 guard await acknowledgeOverlaySession(
                     acknowledgementID: capturedIdentity.acknowledgementID
                 ),
@@ -1778,11 +1793,24 @@ final class AppStore: ObservableObject {
         sessionID: String,
         identity: OverlaySessionProjectionIdentity
     ) {
-        overlaySessionNavigationNotices[sessionID] =
-            OverlaySessionNavigationNoticeRecord(
-                identity: identity,
-                notice: notice
-            )
+        let record = OverlaySessionNavigationNoticeRecord(
+            identity: identity,
+            notice: notice
+        )
+        overlaySessionNavigationNotices[sessionID] = record
+        overlayNavigationNoticeTasks[sessionID]?.cancel()
+        let sleeper = overlayNavigationNoticeSleeper
+        overlayNavigationNoticeTasks[sessionID] = Task { @MainActor [weak self] in
+            do {
+                try await sleeper(.seconds(3))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self,
+                  overlaySessionNavigationNotices[sessionID]?.generation == record.generation
+            else { return }
+            clearOverlaySessionNavigationNotice(sessionID: sessionID, identity: identity)
+        }
         overlayController.updateLayout(animateBubble: true)
     }
 
@@ -1795,14 +1823,16 @@ final class AppStore: ObservableObject {
         guard overlaySessionNavigationNotices.removeValue(
             forKey: sessionID
         ) != nil else { return }
+        overlayNavigationNoticeTasks.removeValue(forKey: sessionID)?.cancel()
         overlayController.updateLayout(animateBubble: true)
     }
 
     private func reconcileOverlaySessionNavigationNotices() {
         guard !overlaySessionNavigationNotices.isEmpty else { return }
-        overlaySessionNavigationNotices = overlaySessionNavigationNotices.filter {
-            sessionID, record in
-            overlaySessionProjectionIdentities[sessionID] == record.identity
+        for (sessionID, record) in overlaySessionNavigationNotices
+            where overlaySessionProjectionIdentities[sessionID] != record.identity {
+            overlaySessionNavigationNotices.removeValue(forKey: sessionID)
+            overlayNavigationNoticeTasks.removeValue(forKey: sessionID)?.cancel()
         }
     }
 

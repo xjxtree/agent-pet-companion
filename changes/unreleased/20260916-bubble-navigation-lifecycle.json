@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "overlay",
+  "summary_en": "Session navigation notices expire after three seconds and restore the latest message. Failed-session bubbles close persistently after successful navigation; unavailable routes still require manual close.",
+  "summary_zh": "会话跳转提示显示三秒后恢复最新消息。失败气泡成功跳转后持久关闭，无法跳转的气泡仍需手动关闭。"
+}

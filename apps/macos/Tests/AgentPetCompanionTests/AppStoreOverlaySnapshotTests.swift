@@ -7,6 +7,175 @@ import Testing
 @Suite
 struct AppStoreOverlaySnapshotTests {
     @MainActor
+    @Test(arguments: [OverlaySessionNavigationNotice.unavailable, .failed, .degradedToHost])
+    func navigationNoticeExpiresAfterThreeSecondsWithoutANewEvent(
+        notice: OverlaySessionNavigationNotice
+    ) async throws {
+        let timer = OverlayPlacementRetrySleeperProbe()
+        var requests: [String] = []
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            overlayNavigationNoticeSleeper: { await timer.sleep($0) },
+            agentSessionRouteOpener: { _ in
+                notice == .degradedToHost ? .openedAgentHost : .failed(.urlOpenRejected)
+            },
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, _, _ in
+                if method.hasPrefix("agent.session.") { requests.append(method) }
+                return [:]
+            }
+        )
+        let state = navigationFailureState(capability: notice == .unavailable ? .unavailable : .exactSession)
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        let session = try #require(store.overlayAvailableBubbleContents.first?.sessions.first)
+        store.activateOverlaySession(session)
+        for _ in 0..<1_000 where await timer.waitCount == 0 { await Task.yield() }
+        #expect(await timer.delays == [.seconds(3)])
+        #expect(store.overlayAvailableBubbleContents.first?.sessions.first?.navigationNotice == notice)
+        #expect(store.overlayAvailableBubbleContents.first?.sessions.first?.detailText == notice.localizedText())
+
+        await timer.resumeNext()
+        for _ in 0..<1_000 where store.overlayAvailableBubbleContents.first?.sessions.first?.navigationNotice != nil {
+            await Task.yield()
+        }
+        let restored = try #require(store.overlayAvailableBubbleContents.first?.sessions.first)
+        #expect(restored.navigationNotice == nil)
+        #expect(restored.detailText == "Latest Agent reply")
+        #expect(requests.isEmpty)
+        #expect(!store.overlayDismissedBubbleEventIDs.contains(session.id))
+    }
+
+    @MainActor
+    @Test
+    func repeatedNavigationNoticeRestartsTimerAndOldExpiryCannotClearNewNotice() async throws {
+        let timer = OverlayPlacementRetrySleeperProbe()
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            overlayNavigationNoticeSleeper: { await timer.sleep($0) },
+            applicationAppearanceApplier: { _ in }
+        )
+        var state = navigationFailureState(capability: .unavailable)
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        let session = try #require(store.overlayAvailableBubbleContents.first?.sessions.first)
+        store.activateOverlaySession(session)
+        for _ in 0..<1_000 where await timer.waitCount < 1 { await Task.yield() }
+        store.activateOverlaySession(session)
+        for _ in 0..<1_000 where await timer.waitCount < 2 { await Task.yield() }
+        await timer.resumeNext()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(store.overlayAvailableBubbleContents.first?.sessions.first?.navigationNotice == .unavailable)
+
+        state.event.id = "new-agent-reply"
+        state.sessionMessage = AgentSessionDisplayMessage(role: "assistant", content: "Newer Agent reply")
+        state.dismissalID = "msg-" + String(repeating: "b", count: 64)
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        #expect(store.overlayAvailableBubbleContents.first?.sessions.first?.detailText == "Newer Agent reply")
+        let newer = try #require(store.overlayAvailableBubbleContents.first?.sessions.first)
+        store.activateOverlaySession(newer)
+        for _ in 0..<1_000 where await timer.waitCount < 3 { await Task.yield() }
+        await timer.resumeNext()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(store.overlayAvailableBubbleContents.first?.sessions.first?.navigationNotice == .unavailable)
+        await timer.resumeNext()
+        for _ in 0..<1_000 where store.overlayAvailableBubbleContents.first?.sessions.first?.navigationNotice != nil {
+            await Task.yield()
+        }
+        #expect(await timer.delays == [.seconds(3), .seconds(3), .seconds(3)])
+        #expect(store.overlayAvailableBubbleContents.first?.sessions.first?.detailText == "Newer Agent reply")
+    }
+
+    @MainActor
+    @Test(arguments: [NavigationCapability.exactSession, .agentHost])
+    func openingFailedSessionPersistsMessageCloseAndKeepsReplayHidden(
+        capability: NavigationCapability
+    ) async throws {
+        var dismissedIDs: [String] = []
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            agentSessionRouteOpener: { _ in
+                capability == .exactSession ? .openedExactSession : .openedAgentHost
+            },
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, params, _ in
+                guard method.hasPrefix("agent.session.") else { return [:] }
+                #expect(method == "agent.session.dismiss")
+                let token = try #require((params as? [String: Any])?["dismissal_id"] as? String)
+                dismissedIDs.append(token)
+                return ["dismissed": true, "dismissal_id": token]
+            }
+        )
+        var state = navigationFailureState(capability: capability)
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        let session = try #require(store.overlayAvailableBubbleContents.first?.sessions.first)
+        store.activateOverlaySession(session)
+        for _ in 0..<1_000 where !store.overlayAvailableBubbleContents.isEmpty { await Task.yield() }
+        #expect(dismissedIDs == [try #require(state.dismissalID)])
+        #expect(store.overlayAvailableBubbleContents.isEmpty)
+        try store.applyStateSnapshot(messageSnapshot([]))
+        state.event.id = "replayed-failed-event"
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        #expect(store.overlayAvailableBubbleContents.isEmpty)
+    }
+
+    @MainActor
+    @Test(arguments: [false, true])
+    func failedSessionNavigationCloseWaitsForPersistenceAndPreservesNewReply(
+        newReplyArrives: Bool
+    ) async throws {
+        let gate = OverlayPlacementRequestGate()
+        var finished = false
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            agentSessionRouteOpener: { _ in .openedExactSession },
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, params, _ in
+                guard method.hasPrefix("agent.session.") else { return [:] }
+                #expect(method == "agent.session.dismiss")
+                let token = try #require((params as? [String: Any])?["dismissal_id"] as? String)
+                await gate.suspend()
+                finished = true
+                guard newReplyArrives else { throw NSError(domain: "DismissalTest", code: 1) }
+                return ["dismissed": true, "dismissal_id": token]
+            }
+        )
+        var state = navigationFailureState(capability: .exactSession)
+        try store.applyStateSnapshot(messageSnapshot([state]))
+        let session = try #require(store.overlayAvailableBubbleContents.first?.sessions.first)
+        store.activateOverlaySession(session)
+        await gate.waitUntilEntered()
+        #expect(!store.overlayAvailableBubbleContents.isEmpty)
+        if newReplyArrives {
+            state.event.id = "new-reply-during-close"
+            state.sessionMessage = AgentSessionDisplayMessage(role: "assistant", content: "Newer Agent reply")
+            state.dismissalID = "msg-" + String(repeating: "b", count: 64)
+            try store.applyStateSnapshot(messageSnapshot([state]))
+        }
+        await gate.resume()
+        for _ in 0..<1_000 where !finished { await Task.yield() }
+        await Task.yield()
+        #expect(!store.overlayDismissedBubbleEventIDs.contains(session.id))
+        #expect(store.overlayAvailableBubbleContents.first?.sessions.first?.detailText
+            == (newReplyArrives ? "Newer Agent reply" : "Latest Agent reply"))
+    }
+
+    private func navigationFailureState(capability: NavigationCapability) -> ActiveAgentState {
+        let sessionID = "550e8400-e29b-41d4-a716-446655440000"
+        var state = makeState(source: .codex, session: sessionID, event: .failed, activatedSecond: 1)
+        state.dismissalID = "msg-" + String(repeating: "a", count: 64)
+        state.sessionMessage = AgentSessionDisplayMessage(role: "assistant", content: "Latest Agent reply")
+        state.overlayDisplay = AgentOverlayDisplay(
+            summaryKind: .failed,
+            navigation: AgentSessionNavigation(
+                capability: capability,
+                sessionOpen: true,
+                surface: "chatgpt_app",
+                routableSessionID: capability == .exactSession ? sessionID : nil
+            )
+        )
+        return state
+    }
+
+    @MainActor
     @Test
     func manualClosePersistsEveryStatusAndKeepsReplayedMessagesHidden() async throws {
         var requests: [String] = []
