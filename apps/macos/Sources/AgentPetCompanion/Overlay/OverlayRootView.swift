@@ -108,14 +108,14 @@ struct OverlayRootView: View {
                     onInteractionCompleted: { entryID in
                         interactionPresentation.complete(entryID: entryID)
                     },
-                    onVisualEnvelopeChanged: { [weak store] envelope, petID, semanticOwnerEntryID in
+                    onVisualEnvelopeChanged: { [weak store = store] envelope, petID, semanticOwnerEntryID in
                         store?.updateOverlayPetVisualEnvelope(
                             envelope,
                             petID: petID,
                             semanticOwnerEntryID: semanticOwnerEntryID
                         )
                     },
-                    onFrameHitTestChanged: { [weak store] hitTest, petID, semanticOwnerEntryID in
+                    onFrameHitTestChanged: { [weak store = store] hitTest, petID, semanticOwnerEntryID in
                         store?.updateOverlayPetFrameHitTest(
                             hitTest,
                             petID: petID,

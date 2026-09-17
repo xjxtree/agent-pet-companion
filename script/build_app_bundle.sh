@@ -382,6 +382,7 @@ build_native() {
 
 write_runtime_manifest() {
   local host_arch
+  local manifest_json
   host_arch="$(uname -m)"
   case "$host_arch" in
     aarch64) host_arch="arm64" ;;
@@ -389,7 +390,10 @@ write_runtime_manifest() {
   esac
 
   if [[ -z "$TARGET_ARCH" || "$TARGET_ARCH" == "$host_arch" || "$UNIVERSAL" == "1" ]]; then
-    "$APP_RESOURCES/bin/petcore" runtime-manifest >"$RUNTIME_MANIFEST"
+    # Capture before writing into the App. A newly copied bundled executable
+    # can fail its first stdout write when redirected into that same bundle.
+    manifest_json="$("$APP_RESOURCES/bin/petcore" runtime-manifest)"
+    printf '%s\n' "$manifest_json" >"$RUNTIME_MANIFEST"
     return
   fi
 
